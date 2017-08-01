@@ -8,6 +8,7 @@ Created: 8/1/2017
 import glob
 
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -51,7 +52,15 @@ if __name__ == '__main__':
     calib_imgs = glob.glob('./camera_cal/*.jpg')
     camera_matrix, dist_coeffs = calibrate(calib_imgs, 9, 6)
 
-    # Undistort
+    # Show undistort example
     example_img = cv2.imread(calib_imgs[0])
     example_undistorted = cv2.undistort(example_img, camera_matrix, dist_coeffs, None, camera_matrix)
-    cv2.imwrite('output_images/test_undist.jpg', example_undistorted)
+
+    plt.subplot(1, 2, 1)
+    plt.imshow(example_img)
+    plt.title("Original Image")
+    plt.subplot(1, 2, 2)
+    plt.imshow(example_undistorted)
+    plt.title("Undistorted Image")
+    plt.savefig('output_images/test_undist.jpg', bbox_inches='tight')
+    plt.show()
