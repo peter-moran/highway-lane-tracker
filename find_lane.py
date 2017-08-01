@@ -12,19 +12,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def calibrate(image_fnames, chess_rows=9, chess_cols=6):
-    """
-    :param calibration_folder: folder holding `.jpg` chessboard calibration images.
-    :return: The computed (camera matrix, distortion coefficients).
-    """
-    example_img = cv2.imread(image_fnames[0])
-    img_size = (example_img.shape[1], example_img.shape[0])
-
+def find_obj_img_point_pairs(image_fnames, chess_rows, chess_cols):
     # Create object and image point pairings
     chess_corners = np.zeros((chess_cols * chess_rows, 3), np.float32)
     chess_corners[:, :2] = np.mgrid[0:chess_rows, 0:chess_cols].T.reshape(-1, 2)
-
-    chesspoints = []  # 3d points in real world space
+    objpoints = []  # 3d points in real world space
     imgpoints = []  # 2d points in image plane.
     for fname in image_fnames:
         # Load images
@@ -36,24 +28,32 @@ def calibrate(image_fnames, chess_rows=9, chess_cols=6):
 
         # If found, save object points, image points
         if found:
-            chesspoints.append(chess_corners)
+            objpoints.append(chess_corners)
             imgpoints.append(img_corners)
 
-    # Calibrate and return
-    sucess, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(chesspoints, imgpoints, img_size, None, None)
-    if sucess:
-        return (camera_matrix, dist_coeffs)
-    else:
+    return objpoints, imgpoints
+
+
+def calibrate(objpoints, imgpoints, img_size):
+    """
+    :return: The computed (camera matrix, distortion coefficients).
+    """
+    sucess, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, img_size, None, None)
+    if not sucess:
         return None
+    return camera_matrix, dist_coeffs
 
 
 if __name__ == '__main__':
     # Calibrate using checkerboard
     calib_imgs = glob.glob('./camera_cal/*.jpg')
-    camera_matrix, dist_coeffs = calibrate(calib_imgs, 9, 6)
+    example_img = cv2.imread(calib_imgs[0])
+    img_size = (example_img.shape[1], example_img.shape[0])
+
+    objpoints, imgpoints = find_obj_img_point_pairs(calib_imgs, 9, 6)
+    camera_matrix, dist_coeffs = calibrate(objpoints, imgpoints, img_size)
 
     # Show undistort example
-    example_img = cv2.imread(calib_imgs[0])
     example_undistorted = cv2.undistort(example_img, camera_matrix, dist_coeffs, None, camera_matrix)
 
     plt.subplot(1, 2, 1)
