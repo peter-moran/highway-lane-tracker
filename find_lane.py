@@ -44,6 +44,30 @@ def calibrate(objpoints, imgpoints, img_size):
     return camera_matrix, dist_coeffs
 
 
+def find_lane(img, cam_matrix, distortion_coeffs, verbose=True):
+    if verbose:
+        # Show example undistorted road
+        img = cv2.undistort(img, cam_matrix, distortion_coeffs, None, cam_matrix)
+        plt.figure()
+        plt.imshow(img)
+        plt.title("Undistorted Road")
+
+    # Get overhead transformation
+    dy, dx = img.shape[0:2]
+    assert (dy, dx) == (720, 1280), "Unexpected image size."
+    SOURCE = np.float32([(278, 670), (616, 437), (662, 437), (1025, 670)])
+    DESTIN = np.float32([(278, dy), (278, 0), (1025, 0), (1025, dy)])
+    M_trans = cv2.getPerspectiveTransform(SOURCE, DESTIN)
+
+    # Show example overhead image
+    if verbose:
+        overhead = cv2.warpPerspective(img, M_trans, (dx, dy))
+        plt.figure()
+        plt.imshow(overhead)
+        plt.title("Overhead Image")
+        plt.show()
+
+
 if __name__ == '__main__':
     # Calibrate using checkerboard
     calib_imgs = glob.glob('./camera_cal/*.jpg')
@@ -64,24 +88,7 @@ if __name__ == '__main__':
     plt.title("Undistorted Image")
     plt.savefig('output_images/test_undist.jpg', bbox_inches='tight')
 
-    # Show example undistorted road
+    # Run pipeline on single image
     test_imgs = glob.glob('./test_images/*.jpg')
     img = plt.imread(test_imgs[0])
-    img = cv2.undistort(img, camera_matrix, dist_coeffs, None, camera_matrix)
-    plt.figure()
-    plt.imshow(img)
-    plt.title("Undistorted Road")
-
-    # Get overhead transformation
-    dy, dx = img.shape[0:2]
-    assert (dy, dx) == (720, 1280), "Unexpected image size."
-    SOURCE = np.float32([(278, 670), (616, 437), (662, 437), (1025, 670)])
-    DESTIN = np.float32([(278, dy), (278, 0), (1025, 0), (1025, dy)])
-    M_trans = cv2.getPerspectiveTransform(SOURCE, DESTIN)
-
-    # Show example overhead image
-    overhead = cv2.warpPerspective(img, M_trans, (dx, dy))
-    plt.figure()
-    plt.imshow(overhead)
-    plt.title("Overhead Image")
-    plt.show()
+    find_lane(img, camera_matrix, dist_coeffs)
