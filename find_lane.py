@@ -59,24 +59,98 @@ def getOverheadTransform(dx, dy):
 
 
 def find_lane(img, cam_matrix, distortion_coeffs, verbose=True):
+    ## Get an Overhead View
     # Undistort
     img = cv2.undistort(img, cam_matrix, distortion_coeffs, None, cam_matrix)
     if verbose:
-        # Show example undistorted road
+        # Show undistorted road
         plt.figure()
-        plt.subplot(2, 1, 1)
+        plt.subplot(2, 3, 1)
         plt.imshow(img)
         plt.title("Undistorted Road")
 
-    # Get overhead image
+    # Transform to overhead image
     dy, dx = img.shape[0:2]
     M_trans = getOverheadTransform(dx, dy)
-    overhead = cv2.warpPerspective(img, M_trans, (dx, dy))
+    overhead_img = cv2.warpPerspective(img, M_trans, (dx, dy))
     if verbose:
-        # Show example overhead image
-        plt.subplot(2, 1, 2)
-        plt.imshow(overhead)
+        # Show overhead image
+        plt.subplot(2, 3, 2)
+        plt.imshow(overhead_img)
         plt.title("Overhead Image")
+
+    ## Change color space
+    hls = cv2.cvtColor(overhead_img, cv2.COLOR_BGR2HLS)
+    lightness_img = hls[:, :, 2]
+    if verbose:
+        # Show lightness image
+        plt.subplot(2, 3, 3)
+        plt.imshow(lightness_img, cmap='gray')
+        plt.title("Lightness Image")
+
+    ## Get gradient
+    gradmag, graddir = sobel_gradient(lightness_img, kernel_size=13)
+
+    if verbose:
+        # Show gradient image
+        plt.subplot(2, 3, 4)
+        plt.imshow(gradmag, cmap='gray')
+        plt.title("Gradient Image")
+
+    ## Thresholding
+    # Set low pixels to zero
+    threshold_low = 10
+    clean_img = np.copy(gradmag)
+    clean_img[gradmag < threshold_low] = 0.0
+
+    # Set sparce pixel regions to zero
+    clean_img = drop_sparce_regions(gradmag, kernel_size=(9, 9), min_average=5.0)
+
+    if verbose:
+        # Show cleaned image
+        plt.subplot(2, 3, 5)
+        plt.imshow(clean_img, cmap='gray')
+        plt.title("Thresholding")
+
+    ## Box filter
+    box = box_filter(gradmag)
+
+    if verbose:
+        # Show box filter
+        plt.subplot(2, 3, 6)
+        plt.imshow(box, cmap='gray')
+        plt.title("Normalized Box Filter")
+
+
+def box_filter(img, kernel_size=(61, 61)):
+    box = np.float32(cv2.blur(img, ksize=kernel_size))
+    cv2.normalize(box, box, 0, 255, cv2.NORM_MINMAX)
+    return box
+
+
+def drop_sparce_regions(img, kernel_size, min_average):
+    """
+    At each pixel, uses a kernel_size kernel to compute the average pixel value
+    in that region. If the average is below min_average, the pixel is set to 0.
+    """
+    box = cv2.boxFilter(img, -1, kernel_size, normalize=True)
+    box[box < min_average] = 0
+    return box
+
+
+def sobel_gradient(img, kernel_size):
+    """
+    :param img: image to return the gradient for.
+    :param kernel_size: gradient kernel size.
+    :return: magnitude image (normalized to 0-255) and direction image (-pi to pi).
+    """
+    sobel_x = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=kernel_size)
+    sobel_y = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=kernel_size)
+    magnitude = (sobel_x ** 2 + sobel_y ** 2) ** 0.5
+    cv2.normalize(magnitude, magnitude, 0, 255, cv2.NORM_MINMAX)
+    direction = np.arctan2(sobel_y, sobel_x)
+    assert isinstance(magnitude, np.ndarray)
+    return magnitude, direction
 
 
 if __name__ == '__main__':
@@ -101,7 +175,7 @@ if __name__ == '__main__':
 
     # Run pipeline on single image
     test_imgs = glob.glob('./test_images/*.jpg')
-    for imgf in test_imgs[:2]:
+    for imgf in test_imgs[:]:
         img = plt.imread(imgf)
         find_lane(img, camera_matrix, dist_coeffs)
     plt.show()
