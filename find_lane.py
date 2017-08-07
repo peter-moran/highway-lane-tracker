@@ -44,28 +44,39 @@ def calibrate(objpoints, imgpoints, img_size):
     return camera_matrix, dist_coeffs
 
 
+def getOverheadTransform(dx, dy):
+    assert (dy, dx) == (720, 1280), "Unexpected image size."
+    # Define points
+    top_left = (614, 435)
+    top_right = (668, 435)
+    bottom_left = (295, 665)
+    bottom_right = (1022, 665)
+    source = np.float32([top_left, top_right, bottom_right, bottom_left])
+    destination = np.float32([(bottom_left[0], 0), (bottom_right[0], 0),
+                              (bottom_right[0], dy), (bottom_left[0], dy)])
+    M_trans = cv2.getPerspectiveTransform(source, destination)
+    return M_trans
+
+
 def find_lane(img, cam_matrix, distortion_coeffs, verbose=True):
+    # Undistort
+    img = cv2.undistort(img, cam_matrix, distortion_coeffs, None, cam_matrix)
     if verbose:
         # Show example undistorted road
-        img = cv2.undistort(img, cam_matrix, distortion_coeffs, None, cam_matrix)
         plt.figure()
+        plt.subplot(2, 1, 1)
         plt.imshow(img)
         plt.title("Undistorted Road")
 
-    # Get overhead transformation
+    # Get overhead image
     dy, dx = img.shape[0:2]
-    assert (dy, dx) == (720, 1280), "Unexpected image size."
-    SOURCE = np.float32([(278, 670), (616, 437), (662, 437), (1025, 670)])
-    DESTIN = np.float32([(278, dy), (278, 0), (1025, 0), (1025, dy)])
-    M_trans = cv2.getPerspectiveTransform(SOURCE, DESTIN)
-
-    # Show example overhead image
+    M_trans = getOverheadTransform(dx, dy)
+    overhead = cv2.warpPerspective(img, M_trans, (dx, dy))
     if verbose:
-        overhead = cv2.warpPerspective(img, M_trans, (dx, dy))
-        plt.figure()
+        # Show example overhead image
+        plt.subplot(2, 1, 2)
         plt.imshow(overhead)
         plt.title("Overhead Image")
-        plt.show()
 
 
 if __name__ == '__main__':
@@ -90,5 +101,7 @@ if __name__ == '__main__':
 
     # Run pipeline on single image
     test_imgs = glob.glob('./test_images/*.jpg')
-    img = plt.imread(test_imgs[0])
-    find_lane(img, camera_matrix, dist_coeffs)
+    for imgf in test_imgs[:2]:
+        img = plt.imread(imgf)
+        find_lane(img, camera_matrix, dist_coeffs)
+    plt.show()
