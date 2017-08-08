@@ -12,6 +12,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+class DynamicSubplot:
+    def __init__(self, m, n):
+        self.figure, self.plots = plt.subplots(m, n)
+        self.plots = self.plots.flatten()
+        self.curr_plot = 0
+
+    def imshow(self, img, title, cmap=None):
+        self.plots[self.curr_plot].imshow(img, cmap=cmap)
+        self.plots[self.curr_plot].set_title(title)
+        self.curr_plot += 1
+
+    def skip_plot(self):
+        self.plots[self.curr_plot].axis('off')
+        self.curr_plot += 1
+
+
 def find_object_img_points(image_fnames, chess_rows, chess_cols):
     # Create object and image point pairings
     chess_corners = np.zeros((chess_cols * chess_rows, 3), np.float32)
@@ -44,6 +60,18 @@ def calibrate(objpoints, imgpoints, img_size):
     return camera_matrix, dist_coeffs
 
 
+def threshold_lanes(image, base_threshold=50, thresh_window=411):
+    # Mask the image
+    binary = cv2.adaptiveThreshold(
+        image,
+        maxValue=255, adaptiveMethod=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        thresholdType=cv2.THRESH_BINARY,
+        blockSize=thresh_window,
+        C=base_threshold * -1)
+
+    return binary
+
+
 def get_overhead_transform(dx, dy):
     assert (dy, dx) == (720, 1280), "Unexpected image size."
     # Define points
@@ -58,72 +86,46 @@ def get_overhead_transform(dx, dy):
     return M_trans
 
 
-def threshold_lanes(overhead_img, base_threshold=50, thresh_window=411, subplots=None):
-    # Mask the image
-    mask = cv2.adaptiveThreshold(
-        overhead_img,
-        maxValue=255, adaptiveMethod=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        thresholdType=cv2.THRESH_BINARY,
-        blockSize=thresh_window,
-        C=base_threshold * -1)
-
-    if subplots is not None:
-        # Show binary image
-        subplots.imshow(mask, "Masking Image", cmap='gray')
-
-    overhead_img[mask == 0] = 0
-    if subplots is not None:
-        # Show binary image
-        subplots.imshow(overhead_img, "Masked Image", cmap='gray')
-
-    return overhead_img
-
-
-def get_overhead_image(image, subplots=None):
+def transform_to_overhead(image):
     # Transform to overhead image
     dy, dx = image.shape[0:2]
     M_trans = get_overhead_transform(dx, dy)
     overhead_img = cv2.warpPerspective(image, M_trans, (dx, dy))
-    if subplots is not None:
-        # Show overhead image
-        subplots.imshow(overhead_img, "Overhead Image", cmap='gray')
+
     return overhead_img
 
 
 def find_lane(dashcam_img, cam_matrix, distortion_coeffs, subplots=None):
     # Undistort
-    dashcam_img = cv2.undistort(dashcam_img, cam_matrix, distortion_coeffs, None, cam_matrix)
-    if subplots is not None:
-        # Show undistorted road
-        subplots.imshow(dashcam_img, "Undistorted Road")
+    undistorted_img = cv2.undistort(dashcam_img, cam_matrix, distortion_coeffs, None, cam_matrix)
 
     # Change color space
     hls = cv2.cvtColor(dashcam_img, cv2.COLOR_BGR2HLS)
     lightness = hls[:, :, 1]
     saturation = hls[:, :, 2]
 
-    # Mask lanes
-    lightness_masked = threshold_lanes(lightness, subplots=subplots)
-    saturation_masked = threshold_lanes(saturation, subplots=subplots)
+    # Transform
+    transformed_lightness = transform_to_overhead(lightness)
+    transformed_saturation = transform_to_overhead(saturation)
+
+    # Threshold for lanes
+    lightness_binary = threshold_lanes(transformed_lightness)
+    saturation_binary = threshold_lanes(transformed_saturation)
+
+    # Stack binary images
+    combo_binary = lightness_binary + saturation_binary
 
     # Print out everything
     if subplots is not None:
-        # Show lightness image
+        subplots.imshow(undistorted_img, "Undistorted Road")
         subplots.imshow(lightness, "Lightness Image", cmap='gray')
-        # Show saturation image
+        subplots.imshow(transformed_lightness, "Overhead Lightness", cmap='gray')
+        subplots.imshow(lightness_binary, "Binary Lightness", cmap='gray')
+        subplots.skip_plot()
         subplots.imshow(saturation, "Saturation Image", cmap='gray')
-
-
-class DynamicSubplot:
-    def __init__(self, m, n):
-        self.figure, self.plots = plt.subplots(m, n)
-        self.plots = self.plots.flatten()
-        self.curr_plot = 0
-
-    def imshow(self, img, title, **kwargs):
-        self.plots[self.curr_plot].imshow(img, **kwargs)
-        self.plots[self.curr_plot].set_title(title)
-        self.curr_plot += 1
+        subplots.imshow(transformed_saturation, "Overhead Saturation", cmap='gray')
+        subplots.imshow(saturation_binary, "Binary Saturation", cmap='gray')
+        subplots.imshow(combo_binary, "Binary Combined", cmap='gray')
 
 
 if __name__ == '__main__':
@@ -131,25 +133,15 @@ if __name__ == '__main__':
     calib_imgs = glob.glob('./camera_cal/*.jpg')
     example_img = cv2.imread(calib_imgs[0])
     img_size = (example_img.shape[1], example_img.shape[0])
-
     objpoints, imgpoints = find_object_img_points(calib_imgs, 9, 6)
     camera_matrix, dist_coeffs = calibrate(objpoints, imgpoints, img_size)
 
-    # Show example undistorted checkerboard
-    example_undistorted = cv2.undistort(example_img, camera_matrix, dist_coeffs, None, camera_matrix)
-
-    plt.subplot(1, 2, 1)
-    plt.imshow(example_img)
-    plt.title("Original Image")
-    plt.subplot(1, 2, 2)
-    plt.imshow(example_undistorted)
-    plt.title("Undistorted Image")
-    plt.savefig('output_images/test_undist.jpg', bbox_inches='tight')
-
-    # Run pipeline on single image
+    # Run pipeline on test images
     test_imgs = glob.glob('./test_images/*.jpg')
     for imgf in test_imgs[:]:
+        subplots = DynamicSubplot(3, 4)
         img = plt.imread(imgf)
-        subplots = DynamicSubplot(3, 3)
         find_lane(img, camera_matrix, dist_coeffs, subplots=subplots)
+
+    # Show all plots
     plt.show()
