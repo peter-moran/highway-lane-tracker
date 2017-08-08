@@ -47,8 +47,8 @@ def calibrate(objpoints, imgpoints, img_size):
 def getOverheadTransform(dx, dy):
     assert (dy, dx) == (720, 1280), "Unexpected image size."
     # Define points
-    top_left = (614, 435)
-    top_right = (668, 435)
+    top_left = (584, 458)
+    top_right = (701, 458)
     bottom_left = (295, 665)
     bottom_right = (1022, 665)
     source = np.float32([top_left, top_right, bottom_right, bottom_left])
@@ -113,7 +113,7 @@ def find_lane(img, cam_matrix, distortion_coeffs, verbose=True):
         plt.title("Thresholding")
 
     ## Box filter
-    box = box_filter(gradmag)
+    box = box_filter(gradmag, kernel_size=(61, 61))
 
     if verbose:
         # Show box filter
@@ -122,7 +122,7 @@ def find_lane(img, cam_matrix, distortion_coeffs, verbose=True):
         plt.title("Normalized Box Filter")
 
 
-def box_filter(img, kernel_size=(61, 61)):
+def box_filter(img, kernel_size):
     box = np.float32(cv2.blur(img, ksize=kernel_size))
     cv2.normalize(box, box, 0, 255, cv2.NORM_MINMAX)
     return box
