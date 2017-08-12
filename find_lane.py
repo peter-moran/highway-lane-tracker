@@ -112,25 +112,23 @@ def find_window_centroids(image, window_width, window_height, margin):
     window_lr_centroids.append((l_line_center, r_line_center))
 
     # Go through each layer looking for max pixel locations
-    for level in range(1, (int)(image.shape[0] / window_height)):
-        search_strip = image[int(img_h - (level + 1) * window_height):int(img_h - level * window_height), :]
+    for level in range(1, image.shape[0] // window_height):
+        search_strip = image[img_h - (level + 1) * window_height:img_h - level * window_height, :]
         strip_scores = score_columns(search_strip, window_width)
 
         # Find the best left centroid nearby the centroid from the row below
-        l_search_min = int(max(l_line_center - margin, 0))
-        l_search_max = int(min(l_line_center + margin, img_w))
-        l_line_center = argmax_between(strip_scores, l_search_min, l_search_max)
+        l_search_min = max(l_line_center - margin, 0)
+        l_search_max = min(l_line_center + margin, img_w)
+        l_max_ndx = argmax_between(strip_scores, l_search_min, l_search_max)
 
         # Find the best right centroid nearby the centroid from the row below
-        r_search_min = int(max(r_line_center - margin, 0))
-        r_search_max = int(min(r_line_center + margin, img_w))
-        r_line_center = argmax_between(strip_scores, r_search_min, r_search_max)
+        r_search_min = max(r_line_center - margin, 0)
+        r_search_max = min(r_line_center + margin, img_w)
+        r_max_ndx = argmax_between(strip_scores, r_search_min, r_search_max)
 
-        # Override with last center if search area had no pixels
-        if strip_scores[l_line_center] == 0:
-            l_line_center = window_lr_centroids[-1][0]
-        if strip_scores[r_line_center] == 0:
-            r_line_center = window_lr_centroids[-1][1]
+        # Update predicted line center, unless there were no pixels in search region (ie max was zero).
+        l_line_center = l_max_ndx if strip_scores[l_max_ndx] != 0 else l_line_center
+        r_line_center = r_max_ndx if strip_scores[r_max_ndx] != 0 else r_line_center
 
         window_lr_centroids.append((l_line_center, r_line_center))
 
@@ -145,8 +143,10 @@ def score_columns(image, window_width):
     return scores
 
 
-def argmax_between(arr, begin, end):
-    return np.argmax(arr[begin:end]) + begin
+def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
+    max_ndx = np.argmax(arr[begin:end]) + begin
+    assert isinstance(max_ndx, int)
+    return max_ndx
 
 
 def find_lane(dashcam_img, cam_matrix, distortion_coeffs, subplots=None):
