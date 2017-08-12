@@ -10,6 +10,9 @@ import glob
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.ndimage.filters import convolve as center_convolve
+
+from udacity_tools import overlay_centroids
 
 
 class DynamicSubplot:
@@ -95,6 +98,57 @@ def transform_to_overhead(image):
     return overhead_img
 
 
+def find_window_centroids(image, window_width, window_height, margin):
+    img_h, img_w = image.shape[0:2]
+    window_lr_centroids = []  # Store the (left,right) window centroid positions per level
+
+    # Find the start of the line, along the bottom of the image
+    search_strip = image[2 * img_h // 3:, :]  # search bottom 1/3rd of image
+    strip_scores = score_columns(search_strip, window_width)
+    l_line_center = argmax_between(strip_scores, begin=0, end=img_w // 2)
+    r_line_center = argmax_between(strip_scores, begin=img_w // 2, end=img_w)
+
+    # Add what we found for the first layer
+    window_lr_centroids.append((l_line_center, r_line_center))
+
+    # Go through each layer looking for max pixel locations
+    for level in range(1, (int)(image.shape[0] / window_height)):
+        search_strip = image[int(img_h - (level + 1) * window_height):int(img_h - level * window_height), :]
+        strip_scores = score_columns(search_strip, window_width)
+
+        # Find the best left centroid nearby the centroid from the row below
+        l_search_min = int(max(l_line_center - margin, 0))
+        l_search_max = int(min(l_line_center + margin, img_w))
+        l_line_center = argmax_between(strip_scores, l_search_min, l_search_max)
+
+        # Find the best right centroid nearby the centroid from the row below
+        r_search_min = int(max(r_line_center - margin, 0))
+        r_search_max = int(min(r_line_center + margin, img_w))
+        r_line_center = argmax_between(strip_scores, r_search_min, r_search_max)
+
+        # Override with last center if search area had no pixels
+        if strip_scores[l_line_center] == 0:
+            l_line_center = window_lr_centroids[-1][0]
+        if strip_scores[r_line_center] == 0:
+            r_line_center = window_lr_centroids[-1][1]
+
+        window_lr_centroids.append((l_line_center, r_line_center))
+
+    return window_lr_centroids
+
+
+def score_columns(image, window_width):
+    assert window_width % 2 != 0, 'window_width must be odd'
+    window = np.ones(window_width)
+    col_sums = np.sum(image, axis=0)
+    scores = center_convolve(col_sums, window, mode='constant')
+    return scores
+
+
+def argmax_between(arr, begin, end):
+    return np.argmax(arr[begin:end]) + begin
+
+
 def find_lane(dashcam_img, cam_matrix, distortion_coeffs, subplots=None):
     # Undistort
     undistorted_img = cv2.undistort(dashcam_img, cam_matrix, distortion_coeffs, None, cam_matrix)
@@ -115,6 +169,12 @@ def find_lane(dashcam_img, cam_matrix, distortion_coeffs, subplots=None):
     # Stack binary images
     combo_binary = lightness_binary + saturation_binary
 
+    # Select lane lines
+    window_width = 41
+    window_height = 100
+    margin = 50
+    window_centroids = find_window_centroids(combo_binary, window_width=window_width, window_height=window_height,
+                                             margin=margin)
     # Print out everything
     if subplots is not None:
         subplots.imshow(undistorted_img, "Undistorted Road")
@@ -126,6 +186,8 @@ def find_lane(dashcam_img, cam_matrix, distortion_coeffs, subplots=None):
         subplots.imshow(transformed_saturation, "Overhead Saturation", cmap='gray')
         subplots.imshow(saturation_binary, "Binary Saturation", cmap='gray')
         subplots.imshow(combo_binary, "Binary Combined", cmap='gray')
+        centroids_img = overlay_centroids(combo_binary, window_centroids, window_height, window_width)
+        subplots.imshow(centroids_img, "Centroids")
 
 
 if __name__ == '__main__':
