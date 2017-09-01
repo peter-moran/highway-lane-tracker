@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.ndimage.filters import convolve as center_convolve
 
-from udacity_tools import overlay_centroids
+from udacity_tools import overlay_centroids, window_mask
 
 
 class DynamicSubplot:
@@ -148,7 +148,24 @@ def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
     return max_ndx
 
 
-def find_lane(dashcam_img, cam_matrix, distortion_coeffs, subplots=None):
+def mask_with_centroids(img, centroids, window_width, window_height):
+    if len(centroids) <= 0:
+        return
+    # Create a mask of all window areas
+    mask = np.zeros_like(img)
+    for level in range(0, len(centroids)):
+        # Find the mask for this window
+        this_windows_mask = window_mask(window_width, window_height, img, centroids[level], level)
+        # Add it to our overall mask
+        mask[(mask == 1) | ((this_windows_mask == 1))] = 1
+
+    # Apply the mask
+    masked_img = np.copy(img)
+    masked_img[mask != 1] = 0
+    return masked_img
+
+
+def find_lane(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
     # Undistort
     undistorted_img = cv2.undistort(dashcam_img, cam_matrix, distortion_coeffs, None, cam_matrix)
 
@@ -172,21 +189,27 @@ def find_lane(dashcam_img, cam_matrix, distortion_coeffs, subplots=None):
     window_width = 41
     window_height = 100
     margin = 50
-    window_centroids = find_window_centroids(combo_binary, window_width=window_width, window_height=window_height,
-                                             margin=margin)
+    window_centroids = find_window_centroids(combo_binary, window_width, window_height, margin)
+
+    # Mask out centroids
+    left_centroids, right_centroids = zip(*window_centroids)
+    left_line_masked = mask_with_centroids(combo_binary, left_centroids, window_width, window_height)
+    right_line_masked = mask_with_centroids(combo_binary, right_centroids, window_width, window_height)
+
     # Print out everything
-    if subplots is not None:
-        subplots.imshow(undistorted_img, "Undistorted Road")
-        subplots.imshow(lightness, "Lightness Image", cmap='gray')
-        subplots.imshow(transformed_lightness, "Overhead Lightness", cmap='gray')
-        subplots.imshow(lightness_binary, "Binary Lightness", cmap='gray')
-        subplots.skip_plot()
-        subplots.imshow(saturation, "Saturation Image", cmap='gray')
-        subplots.imshow(transformed_saturation, "Overhead Saturation", cmap='gray')
-        subplots.imshow(saturation_binary, "Binary Saturation", cmap='gray')
-        subplots.imshow(combo_binary, "Binary Combined", cmap='gray')
+    if dynamic_subplot is not None:
+        dynamic_subplot.imshow(undistorted_img, "Undistorted Road")
+        dynamic_subplot.imshow(lightness, "Lightness Image", cmap='gray')
+        dynamic_subplot.imshow(transformed_lightness, "Overhead Lightness", cmap='gray')
+        dynamic_subplot.imshow(lightness_binary, "Binary Lightness", cmap='gray')
+        dynamic_subplot.skip_plot()
+        dynamic_subplot.imshow(saturation, "Saturation Image", cmap='gray')
+        dynamic_subplot.imshow(transformed_saturation, "Overhead Saturation", cmap='gray')
+        dynamic_subplot.imshow(saturation_binary, "Binary Saturation", cmap='gray')
+        dynamic_subplot.imshow(combo_binary, "Binary Combined", cmap='gray')
         centroids_img = overlay_centroids(combo_binary, window_centroids, window_height, window_width)
-        subplots.imshow(centroids_img, "Centroids")
+        dynamic_subplot.imshow(centroids_img, "Centroids")
+        dynamic_subplot.imshow(left_line_masked, "Left Line Masked", cmap='gray')
 
 
 if __name__ == '__main__':
@@ -202,7 +225,7 @@ if __name__ == '__main__':
     for imgf in test_imgs[:]:
         subplots = DynamicSubplot(3, 4)
         img = plt.imread(imgf)
-        find_lane(img, camera_matrix, dist_coeffs, subplots=subplots)
+        find_lane(img, camera_matrix, dist_coeffs, dynamic_subplot=subplots)
 
     # Show all plots
     plt.show()
