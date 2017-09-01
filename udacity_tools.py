@@ -1,5 +1,6 @@
 """
-Helper functions provided by Udacity in their 'Self Driving Car Term 1' Course, with some minor changes.
+Helper functions provided by Udacity or based on code from their 'Self Driving Car Term 1' Course, 
+with some minor changes.
 """
 import cv2
 import numpy as np

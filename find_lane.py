@@ -174,17 +174,25 @@ def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
     return max_ndx
 
 
+def get_nonzero_pixel_locations(binary_img):
+    """
+    Returns the x, y locations of all nonzero pixels.
+    """
+    points = np.argwhere(binary_img)
+    y, x = zip(*points)  # mapping r,c -> y,x format.
+    return x, y
+
+
 def fit_pixels(binary_img):
     """
     Returns the polynomial that fits the pixels in a binary image, as well as the (x,y) pairs for the polynomial
     it forms on the image.
     """
-    # Find the fit
-    points = np.argwhere(binary_img)
-    y, x = zip(*points)  # mapping r,c -> y,x format.
+    # Calculate fit
+    x, y = get_nonzero_pixel_locations(binary_img)
     fit = np.polyfit(y, x, 2)  # we want x according to y
 
-    # Find the pixels along the fit on the image
+    # Determine the location of the polynomial fit line for each row of the image
     y = np.linspace(0, binary_img.shape[1] - 1, num=binary_img.shape[1])  # to cover y-range of image
     x = fit[0] * y ** 2 + fit[1] * y + fit[2]
 
@@ -208,7 +216,24 @@ def mask_with_centroids(img, centroids, window_width, window_height):
     return masked_img
 
 
+def find_curvature(binary_img, y_eval):
+    """Returns radius of curvature in meters."""
+    Y_M_PER_PIX = 30 / 720  # meters per pixel in y dimension
+    X_M_PER_PIX = 3.7 / 700  # meters per pixel in x dimension
+
+    # Fit in world space
+    x, y = get_nonzero_pixel_locations(binary_img)
+    fit_cr = np.polyfit(np.array(y) * Y_M_PER_PIX, np.array(x) * X_M_PER_PIX, 2)
+
+    # Calculate the new radii of curvature
+    curvature_rad = ((1 + (2 * fit_cr[0] * y_eval * Y_M_PER_PIX + fit_cr[1]) ** 2) ** 1.5) / np.absolute(
+        2 * fit_cr[0])
+
+    return curvature_rad
+
+
 def find_lane(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
+    n_rows, n_cols = dashcam_img.shape[:2]
     # Undistort
     undistorted_img = cv2.undistort(dashcam_img, cam_matrix, distortion_coeffs, None, cam_matrix)
 
@@ -234,14 +259,19 @@ def find_lane(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
     margin = 50
     window_centroids = find_window_centroids(combo_binary, window_width, window_height, margin)
 
-    # Mask out centroids
+    # Mask out lane lines according to centroid windows
     left_centroids, right_centroids = zip(*window_centroids)
     left_line_masked = mask_with_centroids(combo_binary, left_centroids, window_width, window_height)
     right_line_masked = mask_with_centroids(combo_binary, right_centroids, window_width, window_height)
 
-    # Fit according to pixels
+    # Fit lines along the pixels
     left_fit, left_fit_x, left_fit_y = fit_pixels(left_line_masked)
     right_fit, right_fit_x, right_fit_y = fit_pixels(right_line_masked)
+
+    # Calculate radius of curvature
+    left_curvature = find_curvature(left_line_masked, y_eval=n_rows - 1)
+    right_curvature = find_curvature(right_line_masked, y_eval=n_rows - 1)
+    print(left_curvature, 'm', right_curvature, 'm')
 
     # Print out everything
     if dynamic_subplot is not None:
@@ -257,7 +287,6 @@ def find_lane(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
         centroids_img = overlay_centroids(combo_binary, window_centroids, window_height, window_width)
         dynamic_subplot.imshow(centroids_img, "Centroids")
         dynamic_subplot.imshow(left_line_masked + right_line_masked, "Masked & Fitted Lines", cmap='gray')
-        n_rows, n_cols = left_line_masked.shape[:2]
         dynamic_subplot.modify_plot('plot', left_fit_x, left_fit_y)
         dynamic_subplot.modify_plot('plot', right_fit_x, right_fit_y)
         dynamic_subplot.modify_plot('set_xlim', 0, n_cols)
