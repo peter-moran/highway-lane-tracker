@@ -19,16 +19,42 @@ class DynamicSubplot:
     def __init__(self, m, n):
         self.figure, self.plots = plt.subplots(m, n)
         self.plots = self.plots.flatten()
-        self.curr_plot = 0
+        self.__curr_plot = -1
 
     def imshow(self, img, title, cmap=None):
-        self.plots[self.curr_plot].imshow(img, cmap=cmap)
-        self.plots[self.curr_plot].set_title(title)
-        self.curr_plot += 1
+        """Shows the image in the next plot."""
+        self.next_subplot()
+        self.plots[self.__curr_plot].imshow(img, cmap=cmap)
+        self.plots[self.__curr_plot].set_title(title)
 
     def skip_plot(self):
-        self.plots[self.curr_plot].axis('off')
-        self.curr_plot += 1
+        """Sets the plot to empty and advances to the next plot."""
+        self.next_subplot()
+        self.plots[self.__curr_plot].axis('off')
+
+    def call(self, func_name, *args, **kwargs):
+        self.next_subplot()
+        func = getattr(self.plots[self.__curr_plot], func_name)
+        func(*args, **kwargs)
+
+    def modify_plot(self, func_name, *args, **kwargs):
+        """Allows you to call any function on the current plot."""
+        if self.__curr_plot == -1:
+            raise IndexError("There is no plot to modify.")
+        func = getattr(self.plots[self.__curr_plot], func_name)
+        func(*args, **kwargs)
+
+    def next_subplot(self, n=1):
+        """Increments to the next plot."""
+        self.__curr_plot += n
+        if self.__curr_plot > len(self.plots):
+            raise IndexError("You've gone too far forward. There are no more subplots.")
+
+    def last_subplot(self, n=1):
+        """Increments to the next plot."""
+        self.__curr_plot -= n
+        if self.__curr_plot < 0:
+            raise IndexError("You've gone too far back. There are no more subplots.")
 
 
 def find_object_img_points(image_fnames, chess_rows, chess_cols):
@@ -148,6 +174,23 @@ def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
     return max_ndx
 
 
+def fit_pixels(binary_img):
+    """
+    Returns the polynomial that fits the pixels in a binary image, as well as the (x,y) pairs for the polynomial
+    it forms on the image.
+    """
+    # Find the fit
+    points = np.argwhere(binary_img)
+    y, x = zip(*points)  # mapping r,c -> y,x format.
+    fit = np.polyfit(y, x, 2)  # we want x according to y
+
+    # Find the pixels along the fit on the image
+    y = np.linspace(0, binary_img.shape[1] - 1, num=binary_img.shape[1])  # to cover y-range of image
+    x = fit[0] * y ** 2 + fit[1] * y + fit[2]
+
+    return fit, x, y
+
+
 def mask_with_centroids(img, centroids, window_width, window_height):
     if len(centroids) <= 0:
         return
@@ -196,6 +239,10 @@ def find_lane(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
     left_line_masked = mask_with_centroids(combo_binary, left_centroids, window_width, window_height)
     right_line_masked = mask_with_centroids(combo_binary, right_centroids, window_width, window_height)
 
+    # Fit according to pixels
+    left_fit, left_fit_x, left_fit_y = fit_pixels(left_line_masked)
+    right_fit, right_fit_x, right_fit_y = fit_pixels(right_line_masked)
+
     # Print out everything
     if dynamic_subplot is not None:
         dynamic_subplot.imshow(undistorted_img, "Undistorted Road")
@@ -209,7 +256,12 @@ def find_lane(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
         dynamic_subplot.imshow(combo_binary, "Binary Combined", cmap='gray')
         centroids_img = overlay_centroids(combo_binary, window_centroids, window_height, window_width)
         dynamic_subplot.imshow(centroids_img, "Centroids")
-        dynamic_subplot.imshow(left_line_masked, "Left Line Masked", cmap='gray')
+        dynamic_subplot.imshow(left_line_masked + right_line_masked, "Masked & Fitted Lines", cmap='gray')
+        n_rows, n_cols = left_line_masked.shape[:2]
+        dynamic_subplot.modify_plot('plot', left_fit_x, left_fit_y)
+        dynamic_subplot.modify_plot('plot', right_fit_x, right_fit_y)
+        dynamic_subplot.modify_plot('set_xlim', 0, n_cols)
+        dynamic_subplot.modify_plot('set_ylim', n_rows, 0)
 
 
 if __name__ == '__main__':
