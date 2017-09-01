@@ -145,7 +145,6 @@ def score_columns(image, window_width):
 
 def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
     max_ndx = np.argmax(arr[begin:end]) + begin
-    assert isinstance(max_ndx, int)
     return max_ndx
 
 
