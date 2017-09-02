@@ -58,38 +58,6 @@ class DynamicSubplot:
             raise IndexError("You've gone too far back. There are no more subplots.")
 
 
-def find_object_img_points(image_fnames, chess_rows, chess_cols):
-    # Create object and image point pairings
-    chess_corners = np.zeros((chess_cols * chess_rows, 3), np.float32)
-    chess_corners[:, :2] = np.mgrid[0:chess_rows, 0:chess_cols].T.reshape(-1, 2)
-    objpoints = []  # 3d points in real world space
-    imgpoints = []  # 2d points in image plane.
-    for fname in image_fnames:
-        # Load images
-        img = cv2.imread(fname)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # Find the chessboard corners
-        found, img_corners = cv2.findChessboardCorners(gray, (chess_rows, chess_cols), None)
-
-        # If found, save object points, image points
-        if found:
-            objpoints.append(chess_corners)
-            imgpoints.append(img_corners)
-
-    return objpoints, imgpoints
-
-
-def calibrate(objpoints, imgpoints, img_size):
-    """
-    :return: The computed (camera matrix, distortion coefficients).
-    """
-    sucess, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, img_size, None, None)
-    if not sucess:
-        return None
-    return camera_matrix, dist_coeffs
-
-
 def threshold_lanes(image, base_threshold=50, thresh_window=411):
     # Mask the image
     binary = cv2.adaptiveThreshold(
@@ -255,10 +223,9 @@ def find_curvature(binary_img, y_eval):
     return curvature_rad
 
 
-def find_lane_in_frame(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
-    n_rows, n_cols = dashcam_img.shape[:2]
+def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
     # Undistort
-    undistorted_img = cv2.undistort(dashcam_img, cam_matrix, distortion_coeffs, None, cam_matrix)
+    undistorted_img = camera.undistort(dashcam_img)
 
     # Change color space
     hls = cv2.cvtColor(dashcam_img, cv2.COLOR_BGR2HLS)
@@ -290,12 +257,12 @@ def find_lane_in_frame(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subpl
     # Fit lines along the pixels
     y, left_fit_x, right_fit_x = fit_parallel_polynomials(get_nonzero_pixel_locations(left_line_masked),
                                                           get_nonzero_pixel_locations(right_line_masked),
-                                                          n_rows)
+                                                          camera.img_height)
 
 
     # Calculate radius of curvature
-    left_curvature = find_curvature(left_line_masked, y_eval=n_rows - 1)
-    right_curvature = find_curvature(right_line_masked, y_eval=n_rows - 1)
+    left_curvature = find_curvature(left_line_masked, y_eval=camera.img_height - 1)
+    right_curvature = find_curvature(right_line_masked, y_eval=camera.img_height - 1)
     print(left_curvature, 'm', right_curvature, 'm')
 
     # Print out everything
@@ -314,24 +281,70 @@ def find_lane_in_frame(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subpl
         dynamic_subplot.imshow(left_line_masked + right_line_masked, "Masked & Fitted Lines", cmap='gray')
         dynamic_subplot.modify_plot('plot', left_fit_x, y)
         dynamic_subplot.modify_plot('plot', right_fit_x, y)
-        dynamic_subplot.modify_plot('set_xlim', 0, n_cols)
-        dynamic_subplot.modify_plot('set_ylim', n_rows, 0)
+        dynamic_subplot.modify_plot('set_xlim', 0, camera.img_width)
+        dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
 
+
+class Camera:
+    def __init__(self, chessboard_img_fnames, chessboard_size):
+        # Get image size
+        example_img = cv2.imread(chessboard_img_fnames[0])
+        self.img_size = example_img.shape[0:2]
+        self.img_height = self.img_size[0]
+        self.img_width = self.img_size[1]
+
+        # Calibrate
+        self.camera_matrix, self.distortion_coeffs = self.calibrate(chessboard_img_fnames, chessboard_size)
+
+    def calibrate(self, chessboard_img_files, chessboard_size):
+        """
+        Calibrates the camera using chessboard calibration images.
+        :param chessboard_img_files: List of files name locations for the calibration images.
+        :param chessboard_size: Size of the calibration chessboard.
+        :return: Two lists: objpoints, imgpoints
+        """
+        # Create placeholder lists
+        chess_rows, chess_cols = chessboard_size
+        chess_corners = np.zeros((chess_cols * chess_rows, 3), np.float32)
+        chess_corners[:, :2] = np.mgrid[0:chess_rows, 0:chess_cols].T.reshape(-1, 2)
+        objpoints = []  # 3d points in real world space
+        imgpoints = []  # 2d points in image plane.
+
+        # Determine object point, image point pairs
+        for fname in chessboard_img_files:
+            # Load images
+            img = cv2.imread(fname)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+            # Find the chessboard corners
+            found, img_corners = cv2.findChessboardCorners(gray, (chess_rows, chess_cols), None)
+
+            # If found, save object points, image points
+            if found:
+                objpoints.append(chess_corners)
+                imgpoints.append(img_corners)
+
+        # Perform calibration
+        success, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, self.img_size,
+                                                                                None, None)
+        if not success:
+            raise Exception("Camera calibration unsuccessful.")
+        return camera_matrix, dist_coeffs
+
+    def undistort(self, image):
+        return cv2.undistort(image, self.camera_matrix, self.distortion_coeffs, None, self.camera_matrix)
 
 if __name__ == '__main__':
     # Calibrate using checkerboard
-    calib_imgs = glob.glob('./camera_cal/*.jpg')
-    example_img = cv2.imread(calib_imgs[0])
-    img_size = (example_img.shape[1], example_img.shape[0])
-    objpoints, imgpoints = find_object_img_points(calib_imgs, 9, 6)
-    camera_matrix, dist_coeffs = calibrate(objpoints, imgpoints, img_size)
+    calibration_img_files = glob.glob('./camera_cal/*.jpg')
+    dashcam = Camera(calibration_img_files, chessboard_size=(9, 6))
 
     # Run pipeline on test images
     test_imgs = glob.glob('./test_images/*.jpg')
     for imgf in test_imgs[:]:
         subplots = DynamicSubplot(3, 4)
         img = plt.imread(imgf)
-        find_lane_in_frame(img, camera_matrix, dist_coeffs, dynamic_subplot=subplots)
+        find_lane_in_frame(img, dashcam, dynamic_subplot=subplots)
 
     # Show all plots
     plt.show()
