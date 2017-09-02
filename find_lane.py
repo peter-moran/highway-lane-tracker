@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Finds lane lines and their curvature from dashcam video.
+Finds lane lines and their curvature from dashcam input_video.
 
 Author: Peter Moran
 Created: 8/1/2017
@@ -12,7 +12,25 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import symfit
+from imageio.core import NeedDownloadError
 from scipy.ndimage.filters import convolve as center_convolve
+
+# Import moviepy and install ffmpeg if needed.
+try:
+    from moviepy.editor import VideoFileClip
+except NeedDownloadError as download_err:
+    if 'ffmpeg' in str(download_err):
+        prompt = input('The dependency `ffmpeg` is missing, would you like to download it? [y]/n')
+        if prompt == '' or prompt == y or prompt == 'Y':
+            from imageio.plugins import ffmpeg
+
+            ffmpeg.download()
+            from moviepy.editor import VideoFileClip
+        else:
+            raise download_err
+    else:
+        # Unknown download error
+        raise download_err
 
 from udacity_tools import overlay_centroids, window_mask
 
@@ -293,6 +311,8 @@ def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
         dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
         dynamic_subplot.imshow(lane_img, "Highlighted Lane")
 
+    return lane_img
+
 
 class DashboardCamera:
     def __init__(self, chessboard_img_fnames, chessboard_size, lane_shape):
@@ -390,5 +410,13 @@ if __name__ == '__main__':
             img = plt.imread(img_file)
             find_lane_in_frame(img, dashcam, dynamic_subplot=subplots)
 
-    # Show all plots
-    plt.show()
+        # Show all plots
+        plt.show()
+
+    if str(sys.argv[1]) == 'video':
+        # Create video
+        input_vid_file = 'project_video.mp4'
+        output_vid_file = 'output_' + input_vid_file
+        input_video = VideoFileClip(input_vid_file)
+        output_video = input_video.fl_image(lambda image: find_lane_in_frame(image, dashcam))
+        output_video.write_videofile(output_vid_file, audio=False)
