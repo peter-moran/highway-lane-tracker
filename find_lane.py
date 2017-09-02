@@ -10,6 +10,7 @@ import glob
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import symfit
 from scipy.ndimage.filters import convolve as center_convolve
 
 from udacity_tools import overlay_centroids, window_mask
@@ -199,6 +200,28 @@ def fit_pixels(binary_img):
     return fit, x, y
 
 
+def fit_parallel_polynomials(points_left, points_right, n_rows):
+    # Define global model to fit
+    x_left, y_left, x_right, y_right = symfit.variables('x_left, y_left, x_right, y_right')
+    a, b, x0_left, x0_right = symfit.parameters('a, b, x0_left, x0_right')
+
+    model = symfit.Model({
+        x_left: a * y_left ** 2 + b * y_left + x0_left,
+        x_right: a * y_right ** 2 + b * y_right + x0_right
+    })
+
+    # Apply fit
+    xl, yl = points_left
+    xr, yr = points_right
+    fit = symfit.Fit(model, x_left=xl, y_left=yl, x_right=xr, y_right=yr)
+    fit = fit.execute()
+
+    # Determine the location of the polynomial fit line for each row of the image
+    y = np.linspace(0, n_rows - 1, num=n_rows)  # to cover y-range of image
+    x_left_fit = fit.value(a) * y ** 2 + fit.value(b) * y + fit.value(x0_left)
+    x_right_fit = fit.value(a) * y ** 2 + fit.value(b) * y + fit.value(x0_right)
+    return y, x_left_fit, x_right_fit
+
 def mask_with_centroids(img, centroids, window_width, window_height):
     if len(centroids) <= 0:
         return
@@ -232,7 +255,7 @@ def find_curvature(binary_img, y_eval):
     return curvature_rad
 
 
-def find_lane(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
+def find_lane_in_frame(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
     n_rows, n_cols = dashcam_img.shape[:2]
     # Undistort
     undistorted_img = cv2.undistort(dashcam_img, cam_matrix, distortion_coeffs, None, cam_matrix)
@@ -265,8 +288,10 @@ def find_lane(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
     right_line_masked = mask_with_centroids(combo_binary, right_centroids, window_width, window_height)
 
     # Fit lines along the pixels
-    left_fit, left_fit_x, left_fit_y = fit_pixels(left_line_masked)
-    right_fit, right_fit_x, right_fit_y = fit_pixels(right_line_masked)
+    y, left_fit_x, right_fit_x = fit_parallel_polynomials(get_nonzero_pixel_locations(left_line_masked),
+                                                          get_nonzero_pixel_locations(right_line_masked),
+                                                          n_rows)
+
 
     # Calculate radius of curvature
     left_curvature = find_curvature(left_line_masked, y_eval=n_rows - 1)
@@ -287,8 +312,8 @@ def find_lane(dashcam_img, cam_matrix, distortion_coeffs, dynamic_subplot=None):
         centroids_img = overlay_centroids(combo_binary, window_centroids, window_height, window_width)
         dynamic_subplot.imshow(centroids_img, "Centroids")
         dynamic_subplot.imshow(left_line_masked + right_line_masked, "Masked & Fitted Lines", cmap='gray')
-        dynamic_subplot.modify_plot('plot', left_fit_x, left_fit_y)
-        dynamic_subplot.modify_plot('plot', right_fit_x, right_fit_y)
+        dynamic_subplot.modify_plot('plot', left_fit_x, y)
+        dynamic_subplot.modify_plot('plot', right_fit_x, y)
         dynamic_subplot.modify_plot('set_xlim', 0, n_cols)
         dynamic_subplot.modify_plot('set_ylim', n_rows, 0)
 
@@ -306,7 +331,7 @@ if __name__ == '__main__':
     for imgf in test_imgs[:]:
         subplots = DynamicSubplot(3, 4)
         img = plt.imread(imgf)
-        find_lane(img, camera_matrix, dist_coeffs, dynamic_subplot=subplots)
+        find_lane_in_frame(img, camera_matrix, dist_coeffs, dynamic_subplot=subplots)
 
     # Show all plots
     plt.show()
