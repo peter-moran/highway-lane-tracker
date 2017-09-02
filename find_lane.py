@@ -6,6 +6,7 @@ Author: Peter Moran
 Created: 8/1/2017
 """
 import glob
+import sys
 
 import cv2
 import matplotlib.pyplot as plt
@@ -201,6 +202,34 @@ def find_curvature(binary_img, y_eval):
     return curvature_rad
 
 
+def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
+    """
+    Take an undistorted dashboard camera image and highlights the lane.
+    :param undist_img: An undistorted dashboard view image.
+    :param camera: The DashboardCamera object for the camera the image was taken on.
+    :param left_fit_x: the x values for the left line polynomial at the given y values.
+    :param right_fit_x: the x values for the right line polynomial at the given y values.
+    :param fit_y: the y values the left and right line x values were calculated at.
+    :return: The undistorted image with the lane overlayed on top of it.
+    """
+    # Create an undist_img to draw the lines on
+    lane_poly_overhead = np.zeros_like(undist_img).astype(np.uint8)
+
+    # Recast the x and y points into usable format for cv2.fillPoly()
+    pts_left = np.array([np.transpose(np.vstack([left_fit_x, fit_y]))])
+    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fit_x, fit_y])))])
+    pts = np.hstack((pts_left, pts_right))
+
+    # Draw the lane onto the warped blank undist_img
+    cv2.fillPoly(lane_poly_overhead, np.int_([pts]), (0, 255, 0))
+
+    # Warp back to original undist_img space
+    lane_poly_dash = camera.warp_to_dashboard(lane_poly_overhead)
+
+    # Combine the result with the original undist_img
+    return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
+
+
 def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
     # Undistort
     undistorted_img = camera.undistort(dashcam_img)
@@ -211,8 +240,8 @@ def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
     saturation = hls[:, :, 2]
 
     # Transform
-    transformed_lightness = camera.warp_overhead(lightness)
-    transformed_saturation = camera.warp_overhead(saturation)
+    transformed_lightness = camera.warp_to_overhead(lightness)
+    transformed_saturation = camera.warp_to_overhead(saturation)
 
     # Threshold for lanes
     lightness_binary = threshold_lanes(transformed_lightness)
@@ -233,14 +262,16 @@ def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
     right_line_masked = mask_with_centroids(combo_binary, right_centroids, window_width, window_height)
 
     # Fit lines along the pixels
-    y, left_fit_x, right_fit_x = fit_parallel_polynomials(get_nonzero_pixel_locations(left_line_masked),
-                                                          get_nonzero_pixel_locations(right_line_masked),
-                                                          camera.img_height)
+    fit_y, left_fit_x, right_fit_x = fit_parallel_polynomials(get_nonzero_pixel_locations(left_line_masked),
+                                                              get_nonzero_pixel_locations(right_line_masked),
+                                                              camera.img_height)
 
     # Calculate radius of curvature
     left_curvature = find_curvature(left_line_masked, y_eval=camera.img_height - 1)
     right_curvature = find_curvature(right_line_masked, y_eval=camera.img_height - 1)
-    print(left_curvature, 'm', right_curvature, 'm')
+
+    # Show the lane in world space
+    lane_img = draw_lane(undistorted_img, camera, left_fit_x, right_fit_x, fit_y)
 
     # Print out everything
     if dynamic_subplot is not None:
@@ -256,10 +287,11 @@ def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
         centroids_img = overlay_centroids(combo_binary, window_centroids, window_height, window_width)
         dynamic_subplot.imshow(centroids_img, "Centroids")
         dynamic_subplot.imshow(left_line_masked + right_line_masked, "Masked & Fitted Lines", cmap='gray')
-        dynamic_subplot.modify_plot('plot', left_fit_x, y)
-        dynamic_subplot.modify_plot('plot', right_fit_x, y)
+        dynamic_subplot.modify_plot('plot', left_fit_x, fit_y)
+        dynamic_subplot.modify_plot('plot', right_fit_x, fit_y)
         dynamic_subplot.modify_plot('set_xlim', 0, camera.img_width)
         dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
+        dynamic_subplot.imshow(lane_img, "Highlighted Lane")
 
 
 class DashboardCamera:
@@ -280,8 +312,13 @@ class DashboardCamera:
         # Calibrate
         self.camera_matrix, self.distortion_coeffs = self.calibrate(chessboard_img_fnames, chessboard_size)
 
-        # Define overhead transform
-        self.overhead_transform = self.get_overhead_transform(lane_shape)
+        # Define overhead transform and its inverse
+        top_left, top_right, bottom_left, bottom_right = lane_shape
+        source = np.float32([top_left, top_right, bottom_right, bottom_left])
+        destination = np.float32([(bottom_left[0], 0), (bottom_right[0], 0),
+                                  (bottom_right[0], self.img_height), (bottom_left[0], self.img_height)])
+        self.overhead_transform = cv2.getPerspectiveTransform(source, destination)
+        self.inverse_overhead_transform = cv2.getPerspectiveTransform(destination, source)
 
     def calibrate(self, chessboard_img_files, chessboard_size):
         """
@@ -324,26 +361,19 @@ class DashboardCamera:
         """
         return cv2.undistort(image, self.camera_matrix, self.distortion_coeffs, None, self.camera_matrix)
 
-    def get_overhead_transform(self, lane_shape):
-        """
-        Returns a transformation matrix for warping perspective from this camera's dashboard view to a birds eye view.
-        :param lane_shape: Pixel points for the trapezoidal profile of the lane (on straight road), clockwise starting
-                           from the top left.
-        """
-        # Define points
-        top_left, top_right, bottom_left, bottom_right = lane_shape
-        source = np.float32([top_left, top_right, bottom_right, bottom_left])
-        destination = np.float32([(bottom_left[0], 0), (bottom_right[0], 0),
-                                  (bottom_right[0], self.img_height), (bottom_left[0], self.img_height)])
-        M_trans = cv2.getPerspectiveTransform(source, destination)
-        return M_trans
-
-    def warp_overhead(self, dashboard_image):
+    def warp_to_overhead(self, dashboard_image):
         """
         Transforms this camera's images from the dashboard perspective to an overhead perspective.
         :param dashboard_image: an image taken from the dashboard of the car. Aka a raw image.
         """
         return cv2.warpPerspective(dashboard_image, self.overhead_transform, (self.img_width, self.img_height))
+
+    def warp_to_dashboard(self, dashboard_image):
+        """
+        Transforms this camera's images from the dashboard perspective to an overhead perspective.
+        :param dashboard_image: an image taken from the dashboard of the car. Aka a raw image.
+        """
+        return cv2.warpPerspective(dashboard_image, self.inverse_overhead_transform, (self.img_width, self.img_height))
 
 
 if __name__ == '__main__':
@@ -352,12 +382,13 @@ if __name__ == '__main__':
     lane_shape = [(584, 458), (701, 458), (295, 665), (1022, 665)]
     dashcam = DashboardCamera(calibration_img_files, chessboard_size=(9, 6), lane_shape=lane_shape)
 
-    # Run pipeline on test images
-    test_imgs = glob.glob('./test_images/*.jpg')
-    for img_file in test_imgs[:]:
-        subplots = DynamicSubplot(3, 4)
-        img = plt.imread(img_file)
-        find_lane_in_frame(img, dashcam, dynamic_subplot=subplots)
+    if str(sys.argv[1]) == 'test':
+        # Run pipeline on test images
+        test_imgs = glob.glob('./test_images/*.jpg')
+        for img_file in test_imgs[:]:
+            subplots = DynamicSubplot(3, 4)
+            img = plt.imread(img_file)
+            find_lane_in_frame(img, dashcam, dynamic_subplot=subplots)
 
     # Show all plots
     plt.show()
