@@ -12,6 +12,8 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import symfit
+from filterpy.common import Q_discrete_white_noise
+from filterpy.kalman import KalmanFilter
 from imageio.core import NeedDownloadError
 from scipy.ndimage.filters import convolve as center_convolve
 
@@ -182,10 +184,10 @@ def fit_parallel_polynomials(points_left, points_right, n_rows):
     fit_vals = {'a': fit.value(a), 'b': fit.value(b), 'x0_left': fit.value(x0_left), 'x0_right': fit.value(x0_right)}
 
     # Determine the location of the polynomial fit line for each row of the image
-    fit_y = np.linspace(0, n_rows - 1, num=n_rows)  # to cover y-range of image
-    x_left_fit = fit_vals['a'] * fit_y ** 2 + fit_vals['b'] * fit_y + fit_vals['x0_left']
-    x_right_fit = fit_vals['a'] * fit_y ** 2 + fit_vals['b'] * fit_y + fit_vals['x0_right']
-    return fit_y, x_left_fit, x_right_fit, fit_vals
+    y_fit = np.linspace(0, n_rows - 1, num=n_rows).flatten()  # to cover y-range of image
+    x_left_fit = fit_vals['a'] * y_fit ** 2 + fit_vals['b'] * y_fit + fit_vals['x0_left']
+    x_right_fit = fit_vals['a'] * y_fit ** 2 + fit_vals['b'] * y_fit + fit_vals['x0_right']
+    return y_fit, x_left_fit, x_right_fit, fit_vals
 
 
 def mask_with_centroids(img, centroids, window_width, window_height):
@@ -235,7 +237,7 @@ def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
     lane_poly_overhead = np.zeros_like(undist_img).astype(np.uint8)
 
     # Recast the x and y points into usable format for cv2.fillPoly()
-    pts_left = np.array([np.transpose(np.vstack([left_fit_x, fit_y]))])
+    pts_left = np.array([np.transpose(np.vstack([np.array(left_fit_x), fit_y]))])
     pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fit_x, fit_y])))])
     pts = np.hstack((pts_left, pts_right))
 
@@ -249,7 +251,7 @@ def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
     return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
 
 
-def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
+def find_lane_in_frame(dashcam_img, camera, lane_tracker, dynamic_subplot=None):
     # Undistort
     undistorted_img = camera.undistort(dashcam_img)
 
@@ -289,17 +291,13 @@ def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
     left_curvature = find_curvature(left_line_masked, y_eval=camera.img_height - 1)
     right_curvature = find_curvature(right_line_masked, y_eval=camera.img_height - 1)
 
+    # Filter the estimate
+    lane_tracker.update(left_fit_x, right_fit_x)
+    x_left_estimate, x_right_estimate = lane_tracker.get_estimate()
+
     # Show the lane in world space
-    lane_img = draw_lane(undistorted_img, camera, left_fit_x, right_fit_x, fit_y)
+    lane_img = draw_lane(undistorted_img, camera, x_left_estimate, x_right_estimate, fit_y)
     font_size, font_thickness = 2, 4
-    cv2.putText(lane_img, "a = {: 10e}".format(fit_vals['a']), org=(0, 50), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=font_size, color=(255, 255, 255), thickness=font_thickness, lineType=cv2.LINE_AA)
-    cv2.putText(lane_img, "b = {: 10e}".format(fit_vals['b']), org=(0, 100), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=font_size, color=(255, 255, 255), thickness=font_thickness, lineType=cv2.LINE_AA)
-    cv2.putText(lane_img, "x0_left = {}".format(fit_vals['x0_left']), org=(0, 150), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=font_size, color=(255, 255, 255), thickness=font_thickness, lineType=cv2.LINE_AA)
-    cv2.putText(lane_img, "x0_right = {}".format(fit_vals['x0_right']), org=(0, 200), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                fontScale=font_size, color=(255, 255, 255), thickness=font_thickness, lineType=cv2.LINE_AA)
 
     # Print out everything
     if dynamic_subplot is not None:
@@ -315,14 +313,79 @@ def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
         centroids_img = overlay_centroids(combo_binary, window_centroids, window_height, window_width)
         dynamic_subplot.imshow(centroids_img, "Centroids")
         dynamic_subplot.imshow(left_line_masked + right_line_masked, "Masked & Fitted Lines", cmap='gray')
-        dynamic_subplot.modify_plot('plot', left_fit_x, fit_y)
-        dynamic_subplot.modify_plot('plot', right_fit_x, fit_y)
+        dynamic_subplot.modify_plot('plot', x_left_estimate, fit_y)
+        dynamic_subplot.modify_plot('plot', x_right_estimate, fit_y)
         dynamic_subplot.modify_plot('set_xlim', 0, camera.img_width)
         dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
         dynamic_subplot.imshow(lane_img, "Highlighted Lane")
 
     return lane_img
 
+
+class LaneTracker:
+    def __init__(self, camera):
+        self.y_fit = np.linspace(0, camera.img_height - 1, num=camera.img_height)
+        self.left_lane_points = [KalmanLanePixel() for i in range(len(self.y_fit))]
+        self.right_lane_points = [KalmanLanePixel() for i in range(len(self.y_fit))]
+
+    def update(self, left_fit_x, right_fit_x):
+        if len(left_fit_x) != len(self.y_fit) or len(right_fit_x) != len(self.y_fit):
+            raise Exception('left_fit_x, right_fit_x, and self.y_fit must all have the same length')
+        for i, x_pos in enumerate(left_fit_x):
+            self.left_lane_points[i].update(x_pos)
+        for i, x_pos in enumerate(right_fit_x):
+            self.right_lane_points[i].update(x_pos)
+
+    def get_estimate(self):
+        x_left = np.array([point.get_position() for point in self.left_lane_points]).flatten()
+        x_right = np.array([point.get_position() for point in self.right_lane_points]).flatten()
+        return x_left, x_right
+
+
+class KalmanLanePixel():
+    def __init__(self):
+        """
+        A one dimensional Kalman filter used to track the x position of a single point/pixel on a lane line.
+
+        State variable:  x = [x_pos,
+                              velocity]
+        Update function: F = [[1, 1],
+                              [0, 1]
+                         AKA a constant velocity model.
+        """
+        self.kf = KalmanFilter(dim_x=2, dim_z=1)
+        # Update function
+        self.kf.F = np.array([[1., 1.],
+                              [0., 1.]])
+
+        # Measurement function
+        self.kf.H = np.array([[1., 0.]])
+
+        # Initial state estimate
+        self.kf.x = np.array([500, 0])
+
+        # Initial Covariance matrix
+        self.kf.P = np.eye(self.kf.dim_x) * 10000
+
+        # Measurement noise
+        measurement_variance = 500
+        self.kf.R = np.array([[measurement_variance]])
+
+        # Process noise
+        self.kf.Q = Q_discrete_white_noise(dim=2, dt=1, var=0.5)
+
+    def update(self, x_pos):
+        """
+        Given an estimate x position, uses the kalman filter to estimate the most likely true position of the
+        lane pixel.
+        :param x_pos: measured x position of the pixel
+        :return: best estimate of the true x position of the pixel
+        """
+        self.kf.predict()
+        self.kf.update(x_pos)
+
+    def get_position(self):
+        return self.kf.x[0]
 
 class DashboardCamera:
     def __init__(self, chessboard_img_fnames, chessboard_size, lane_shape):
@@ -346,7 +409,7 @@ class DashboardCamera:
         top_left, top_right, bottom_left, bottom_right = lane_shape
         source = np.float32([top_left, top_right, bottom_right, bottom_left])
         destination = np.float32([(bottom_left[0], 0), (bottom_right[0], 0),
-                                  (bottom_right[0], self.img_height), (bottom_left[0], self.img_height)])
+                                  (bottom_right[0], self.img_height - 1), (bottom_left[0], self.img_height - 1)])
         self.overhead_transform = cv2.getPerspectiveTransform(source, destination)
         self.inverse_overhead_transform = cv2.getPerspectiveTransform(destination, source)
 
@@ -396,14 +459,15 @@ class DashboardCamera:
         Transforms this camera's images from the dashboard perspective to an overhead perspective.
         :param dashboard_image: an image taken from the dashboard of the car. Aka a raw image.
         """
-        return cv2.warpPerspective(dashboard_image, self.overhead_transform, (self.img_width, self.img_height))
+        return cv2.warpPerspective(dashboard_image, self.overhead_transform, dsize=(self.img_width, self.img_height))
 
     def warp_to_dashboard(self, dashboard_image):
         """
         Transforms this camera's images from the dashboard perspective to an overhead perspective.
         :param dashboard_image: an image taken from the dashboard of the car. Aka a raw image.
         """
-        return cv2.warpPerspective(dashboard_image, self.inverse_overhead_transform, (self.img_width, self.img_height))
+        return cv2.warpPerspective(dashboard_image, self.inverse_overhead_transform,
+                                   dsize=(self.img_width, self.img_height))
 
 
 if __name__ == '__main__':
@@ -418,15 +482,16 @@ if __name__ == '__main__':
         for img_file in test_imgs[:]:
             subplots = DynamicSubplot(3, 4)
             img = plt.imread(img_file)
-            find_lane_in_frame(img, dashcam, dynamic_subplot=subplots)
+            find_lane_in_frame(img, dashcam, LaneTracker(dashcam), dynamic_subplot=subplots)
 
         # Show all plots
         plt.show()
 
-    if str(sys.argv[1]) == 'video':
+    else:
         # Create video
-        input_vid_file = 'project_video.mp4'
+        input_vid_file = str(sys.argv[1])
         output_vid_file = 'output_' + input_vid_file
         input_video = VideoFileClip(input_vid_file)
-        output_video = input_video.fl_image(lambda image: find_lane_in_frame(image, dashcam))
+        linetracker = LaneTracker(dashcam)
+        output_video = input_video.fl_image(lambda image: find_lane_in_frame(image, dashcam, linetracker))
         output_video.write_videofile(output_vid_file, audio=False)
