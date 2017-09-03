@@ -199,7 +199,7 @@ def mask_with_centroids(img, centroids, window_width, window_height):
         # Find the mask for this window
         this_windows_mask = window_mask(window_width, window_height, img, centroids[level], level)
         # Add it to our overall mask
-        mask[(mask == 1) | ((this_windows_mask == 1))] = 1
+        mask[(mask == 1) | (this_windows_mask == 1)] = 1
 
     # Apply the mask
     masked_img = np.copy(img)
@@ -297,7 +297,6 @@ def find_lane_in_frame(dashcam_img, camera, lane_tracker, dynamic_subplot=None):
 
     # Show the lane in world space
     lane_img = draw_lane(undistorted_img, camera, x_left_estimate, x_right_estimate, fit_y)
-    font_size, font_thickness = 2, 4
 
     # Print out everything
     if dynamic_subplot is not None:
@@ -342,7 +341,7 @@ class LaneTracker:
         return x_left, x_right
 
 
-class KalmanLanePixel():
+class KalmanLanePixel:
     def __init__(self):
         """
         A one dimensional Kalman filter used to track the x position of a single point/pixel on a lane line.
@@ -368,7 +367,7 @@ class KalmanLanePixel():
         self.kf.P = np.eye(self.kf.dim_x) * 10000
 
         # Measurement noise
-        measurement_variance = 500
+        measurement_variance = 700
         self.kf.R = np.array([[measurement_variance]])
 
         # Process noise
@@ -386,6 +385,7 @@ class KalmanLanePixel():
 
     def get_position(self):
         return self.kf.x[0]
+
 
 class DashboardCamera:
     def __init__(self, chessboard_img_fnames, chessboard_size, lane_shape):
