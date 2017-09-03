@@ -322,10 +322,10 @@ def find_lane_in_frame(dashcam_img, camera, lane_tracker, dynamic_subplot=None):
 
 
 class LaneTracker:
-    def __init__(self, camera):
+    def __init__(self, camera, meas_var=500, process_var=0.5):
         self.y_fit = np.linspace(0, camera.img_height - 1, num=camera.img_height)
-        self.left_lane_points = [KalmanLanePixel() for i in range(len(self.y_fit))]
-        self.right_lane_points = [KalmanLanePixel() for i in range(len(self.y_fit))]
+        self.left_lane_points = [Kalman1D(meas_var, process_var) for i in range(len(self.y_fit))]
+        self.right_lane_points = [Kalman1D(meas_var, process_var) for i in range(len(self.y_fit))]
 
     def update(self, left_fit_x, right_fit_x):
         if len(left_fit_x) != len(self.y_fit) or len(right_fit_x) != len(self.y_fit):
@@ -341,12 +341,12 @@ class LaneTracker:
         return x_left, x_right
 
 
-class KalmanLanePixel:
-    def __init__(self):
+class Kalman1D:
+    def __init__(self, meas_var, process_var, pos_init=0, uncertanty_init=10000):
         """
-        A one dimensional Kalman filter used to track the x position of a single point/pixel on a lane line.
+        A one dimensional Kalman filter used to track the position of a single point along one axis.
 
-        State variable:  x = [x_pos,
+        State variable:  x = [position,
                               velocity]
         Update function: F = [[1, 1],
                               [0, 1]
@@ -361,27 +361,26 @@ class KalmanLanePixel:
         self.kf.H = np.array([[1., 0.]])
 
         # Initial state estimate
-        self.kf.x = np.array([500, 0])
+        self.kf.x = np.array([pos_init, 0])
 
         # Initial Covariance matrix
-        self.kf.P = np.eye(self.kf.dim_x) * 10000
+        self.kf.P = np.eye(self.kf.dim_x) * uncertanty_init
 
         # Measurement noise
-        measurement_variance = 700
-        self.kf.R = np.array([[measurement_variance]])
+        self.kf.R = np.array([[meas_var]])
 
         # Process noise
-        self.kf.Q = Q_discrete_white_noise(dim=2, dt=1, var=0.5)
+        self.kf.Q = Q_discrete_white_noise(dim=2, dt=1, var=process_var)
 
-    def update(self, x_pos):
+    def update(self, pos):
         """
         Given an estimate x position, uses the kalman filter to estimate the most likely true position of the
         lane pixel.
-        :param x_pos: measured x position of the pixel
+        :param pos: measured x position of the pixel
         :return: best estimate of the true x position of the pixel
         """
         self.kf.predict()
-        self.kf.update(x_pos)
+        self.kf.update(pos)
 
     def get_position(self):
         return self.kf.x[0]

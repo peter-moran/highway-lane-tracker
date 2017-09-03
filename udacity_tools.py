@@ -31,6 +31,10 @@ def overlay_centroids(img, window_centroids, window_height, window_width):
 
 
 def window_mask(width, height, img_ref, center, level):
+    """
+    Creates a rectangular mask centered along x axis at `center` and y axis at `level`*`height` from the bottom of the
+    image.
+    """
     output = np.zeros((img_ref.shape[0], img_ref.shape[1]))
     output[int(img_ref.shape[0] - (level + 1) * height):int(img_ref.shape[0] - level * height),
     max(0, int(center - width / 2)):min(int(center + width / 2), img_ref.shape[1])] = 1
