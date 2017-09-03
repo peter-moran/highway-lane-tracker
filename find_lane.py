@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import symfit
 from filterpy.common import Q_discrete_white_noise
-from filterpy.kalman import KalmanFilter
+from filterpy.kalman import KalmanFilter, logpdf
 from imageio.core import NeedDownloadError
 from scipy.ndimage.filters import convolve as center_convolve
 
@@ -146,6 +146,8 @@ def get_nonzero_pixel_locations(binary_img):
     Returns the x, y locations of all nonzero pixels.
     """
     points = np.argwhere(binary_img)
+    if len(points) == 0:
+        return None
     y, x = zip(*points)  # mapping r,c -> y,x format.
     return x, y
 
@@ -251,7 +253,7 @@ def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
     return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
 
 
-def find_lane_in_frame(dashcam_img, camera, lane_trackers, dynamic_subplot=None):
+def find_lane_in_frame(dashcam_img, camera, window_trackers, dynamic_subplot=None):
     # Undistort
     undistorted_img = camera.undistort(dashcam_img)
 
@@ -272,33 +274,40 @@ def find_lane_in_frame(dashcam_img, camera, lane_trackers, dynamic_subplot=None)
     combo_binary = lightness_binary + saturation_binary
 
     # Select lane lines
-    window_width = 41
+    window_width = 81
     window_height = 100
     margin = 50
-    window_centroids = find_window_centroids(combo_binary, window_width, window_height, margin)
+    window_centers = find_window_centroids(combo_binary, window_width, window_height, margin)
+
+    # Filter window selection
+    windows_left, windows_right = zip(*window_centers)
+    window_trackers[0].update(windows_left)
+    window_trackers[1].update(windows_right)
+    windows_left = window_trackers[0].get_estimate()
+    windows_right = window_trackers[1].get_estimate()
+    window_centers = list(zip(windows_left, windows_right))
 
     # Mask out lane lines according to centroid windows
-    left_centroids, right_centroids = zip(*window_centroids)
-    left_line_masked = mask_with_centroids(combo_binary, left_centroids, window_width, window_height)
-    right_line_masked = mask_with_centroids(combo_binary, right_centroids, window_width, window_height)
+    left_line_masked = mask_with_centroids(combo_binary, windows_left, window_width, window_height)
+    right_line_masked = mask_with_centroids(combo_binary, windows_right, window_width, window_height)
+
+    # Ensure windows found something
+    pixel_locs_left = get_nonzero_pixel_locations(left_line_masked)
+    pixel_locs_right = get_nonzero_pixel_locations(right_line_masked)
+    if pixel_locs_left is None or pixel_locs_right is None:
+        # Cannot identify a lane, must skip frame
+        return undistorted_img
 
     # Fit lines along the pixels
-    fit_y, left_fit_x, right_fit_x, fit_vals = fit_parallel_polynomials(get_nonzero_pixel_locations(left_line_masked),
-                                                                        get_nonzero_pixel_locations(right_line_masked),
+    fit_y, left_fit_x, right_fit_x, fit_vals = fit_parallel_polynomials(pixel_locs_left, pixel_locs_right,
                                                                         camera.img_height)
 
     # Calculate radius of curvature
     left_curvature = find_curvature(left_line_masked, y_eval=camera.img_height - 1)
     right_curvature = find_curvature(right_line_masked, y_eval=camera.img_height - 1)
 
-    # Filter the estimate
-    lane_trackers[0].update(left_fit_x)
-    lane_trackers[1].update(right_fit_x)
-    x_left_estimate = lane_trackers[0].get_estimate()
-    x_right_estimate = lane_trackers[1].get_estimate()
-
     # Show the lane in world space
-    lane_img = draw_lane(undistorted_img, camera, x_left_estimate, x_right_estimate, fit_y)
+    lane_img = draw_lane(undistorted_img, camera, left_fit_x, right_fit_x, fit_y)
 
     # Print out everything
     if dynamic_subplot is not None:
@@ -311,11 +320,11 @@ def find_lane_in_frame(dashcam_img, camera, lane_trackers, dynamic_subplot=None)
         dynamic_subplot.imshow(transformed_saturation, "Overhead Saturation", cmap='gray')
         dynamic_subplot.imshow(saturation_binary, "Binary Saturation", cmap='gray')
         dynamic_subplot.imshow(combo_binary, "Binary Combined", cmap='gray')
-        centroids_img = overlay_centroids(combo_binary, window_centroids, window_height, window_width)
+        centroids_img = overlay_centroids(combo_binary, window_centers, window_height, window_width)
         dynamic_subplot.imshow(centroids_img, "Centroids")
         dynamic_subplot.imshow(left_line_masked + right_line_masked, "Masked & Fitted Lines", cmap='gray')
-        dynamic_subplot.modify_plot('plot', x_left_estimate, fit_y)
-        dynamic_subplot.modify_plot('plot', x_right_estimate, fit_y)
+        dynamic_subplot.modify_plot('plot', left_fit_x, fit_y)
+        dynamic_subplot.modify_plot('plot', right_fit_x, fit_y)
         dynamic_subplot.modify_plot('set_xlim', 0, camera.img_width)
         dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
         dynamic_subplot.imshow(lane_img, "Highlighted Lane")
@@ -324,7 +333,7 @@ def find_lane_in_frame(dashcam_img, camera, lane_trackers, dynamic_subplot=None)
 
 
 class CurveTracker:
-    def __init__(self, n_points, meas_var=500, process_var=0.5):
+    def __init__(self, n_points, meas_var=1000, process_var=0.5):
         self.curve_points = [Kalman1D(meas_var, process_var) for i in range(n_points)]
 
     def update(self, curve_points_pos):
@@ -334,12 +343,12 @@ class CurveTracker:
             self.curve_points[i].update(pos)
 
     def get_estimate(self):
-        point_positions = np.array([point.get_position() for point in self.curve_points]).flatten()
+        point_positions = [point.get_position() for point in self.curve_points]
         return point_positions
 
 
 class Kalman1D:
-    def __init__(self, meas_var, process_var, pos_init=0, uncertanty_init=10000):
+    def __init__(self, meas_var, process_var, log_likelihood_min=-10.0, pos_init=0, uncertainty_init=10000):
         """
         A one dimensional Kalman filter used to track the position of a single point along one axis.
 
@@ -350,9 +359,11 @@ class Kalman1D:
                          AKA a constant velocity model.
         """
         self.kf = KalmanFilter(dim_x=2, dim_z=1)
+
         # Update function
         self.kf.F = np.array([[1., 1.],
                               [0., 1.]])
+        self.log_likelihood_min = log_likelihood_min;
 
         # Measurement function
         self.kf.H = np.array([[1., 0.]])
@@ -361,7 +372,7 @@ class Kalman1D:
         self.kf.x = np.array([pos_init, 0])
 
         # Initial Covariance matrix
-        self.kf.P = np.eye(self.kf.dim_x) * uncertanty_init
+        self.kf.P = np.eye(self.kf.dim_x) * uncertainty_init
 
         # Measurement noise
         self.kf.R = np.array([[meas_var]])
@@ -376,6 +387,12 @@ class Kalman1D:
         :param pos: measured x position of the pixel
         :return: best estimate of the true x position of the pixel
         """
+        # Apply outlier rejection using log likelihood
+        pos_log_likelihood = logpdf(pos, np.dot(self.kf.H, self.kf.x), self.kf.S)
+        if pos_log_likelihood <= self.log_likelihood_min:
+            # Log Likelihood is too low, most likely an outlier. Reject this measurement.
+            return
+
         self.kf.predict()
         self.kf.update(pos)
 
@@ -478,7 +495,7 @@ if __name__ == '__main__':
         for img_file in test_imgs[:]:
             subplots = DynamicSubplot(3, 4)
             img = plt.imread(img_file)
-            find_lane_in_frame(img, dashcam, [CurveTracker(dashcam.img_height) for i in range(2)],
+            find_lane_in_frame(img, dashcam, [CurveTracker(7) for i in range(2)],
                                dynamic_subplot=subplots)
 
         # Show all plots
@@ -489,6 +506,6 @@ if __name__ == '__main__':
         input_vid_file = str(sys.argv[1])
         output_vid_file = 'output_' + input_vid_file
         input_video = VideoFileClip(input_vid_file)
-        linetracker = [CurveTracker(dashcam.img_height) for i in range(2)]
+        linetracker = [CurveTracker(7) for i in range(2)]
         output_video = input_video.fl_image(lambda image: find_lane_in_frame(image, dashcam, linetracker))
         output_video.write_videofile(output_vid_file, audio=False)
