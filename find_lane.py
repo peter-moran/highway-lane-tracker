@@ -251,7 +251,7 @@ def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
     return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
 
 
-def find_lane_in_frame(dashcam_img, camera, lane_tracker, dynamic_subplot=None):
+def find_lane_in_frame(dashcam_img, camera, lane_trackers, dynamic_subplot=None):
     # Undistort
     undistorted_img = camera.undistort(dashcam_img)
 
@@ -292,8 +292,10 @@ def find_lane_in_frame(dashcam_img, camera, lane_tracker, dynamic_subplot=None):
     right_curvature = find_curvature(right_line_masked, y_eval=camera.img_height - 1)
 
     # Filter the estimate
-    lane_tracker.update(left_fit_x, right_fit_x)
-    x_left_estimate, x_right_estimate = lane_tracker.get_estimate()
+    lane_trackers[0].update(left_fit_x)
+    lane_trackers[1].update(right_fit_x)
+    x_left_estimate = lane_trackers[0].get_estimate()
+    x_right_estimate = lane_trackers[1].get_estimate()
 
     # Show the lane in world space
     lane_img = draw_lane(undistorted_img, camera, x_left_estimate, x_right_estimate, fit_y)
@@ -321,24 +323,19 @@ def find_lane_in_frame(dashcam_img, camera, lane_tracker, dynamic_subplot=None):
     return lane_img
 
 
-class LaneTracker:
-    def __init__(self, camera, meas_var=500, process_var=0.5):
-        self.y_fit = np.linspace(0, camera.img_height - 1, num=camera.img_height)
-        self.left_lane_points = [Kalman1D(meas_var, process_var) for i in range(len(self.y_fit))]
-        self.right_lane_points = [Kalman1D(meas_var, process_var) for i in range(len(self.y_fit))]
+class CurveTracker:
+    def __init__(self, n_points, meas_var=500, process_var=0.5):
+        self.curve_points = [Kalman1D(meas_var, process_var) for i in range(n_points)]
 
-    def update(self, left_fit_x, right_fit_x):
-        if len(left_fit_x) != len(self.y_fit) or len(right_fit_x) != len(self.y_fit):
-            raise Exception('left_fit_x, right_fit_x, and self.y_fit must all have the same length')
-        for i, x_pos in enumerate(left_fit_x):
-            self.left_lane_points[i].update(x_pos)
-        for i, x_pos in enumerate(right_fit_x):
-            self.right_lane_points[i].update(x_pos)
+    def update(self, curve_points_pos):
+        if len(curve_points_pos) != len(self.curve_points):
+            raise Exception('curve_points_pos and self.curve_points must have the same length')
+        for i, pos in enumerate(curve_points_pos):
+            self.curve_points[i].update(pos)
 
     def get_estimate(self):
-        x_left = np.array([point.get_position() for point in self.left_lane_points]).flatten()
-        x_right = np.array([point.get_position() for point in self.right_lane_points]).flatten()
-        return x_left, x_right
+        point_positions = np.array([point.get_position() for point in self.curve_points]).flatten()
+        return point_positions
 
 
 class Kalman1D:
@@ -481,7 +478,8 @@ if __name__ == '__main__':
         for img_file in test_imgs[:]:
             subplots = DynamicSubplot(3, 4)
             img = plt.imread(img_file)
-            find_lane_in_frame(img, dashcam, LaneTracker(dashcam), dynamic_subplot=subplots)
+            find_lane_in_frame(img, dashcam, [CurveTracker(dashcam.img_height) for i in range(2)],
+                               dynamic_subplot=subplots)
 
         # Show all plots
         plt.show()
@@ -491,6 +489,6 @@ if __name__ == '__main__':
         input_vid_file = str(sys.argv[1])
         output_vid_file = 'output_' + input_vid_file
         input_video = VideoFileClip(input_vid_file)
-        linetracker = LaneTracker(dashcam)
+        linetracker = [CurveTracker(dashcam.img_height) for i in range(2)]
         output_video = input_video.fl_image(lambda image: find_lane_in_frame(image, dashcam, linetracker))
         output_video.write_videofile(output_vid_file, audio=False)
