@@ -21,7 +21,7 @@ try:
 except NeedDownloadError as download_err:
     if 'ffmpeg' in str(download_err):
         prompt = input('The dependency `ffmpeg` is missing, would you like to download it? [y]/n')
-        if prompt == '' or prompt == y or prompt == 'Y':
+        if prompt == '' or prompt == 'y' or prompt == 'Y':
             from imageio.plugins import ffmpeg
 
             ffmpeg.download()
@@ -179,12 +179,13 @@ def fit_parallel_polynomials(points_left, points_right, n_rows):
     xr, yr = points_right
     fit = symfit.Fit(model, x_left=xl, y_left=yl, x_right=xr, y_right=yr)
     fit = fit.execute()
+    fit_vals = {'a': fit.value(a), 'b': fit.value(b), 'x0_left': fit.value(x0_left), 'x0_right': fit.value(x0_right)}
 
     # Determine the location of the polynomial fit line for each row of the image
-    y = np.linspace(0, n_rows - 1, num=n_rows)  # to cover y-range of image
-    x_left_fit = fit.value(a) * y ** 2 + fit.value(b) * y + fit.value(x0_left)
-    x_right_fit = fit.value(a) * y ** 2 + fit.value(b) * y + fit.value(x0_right)
-    return y, x_left_fit, x_right_fit
+    fit_y = np.linspace(0, n_rows - 1, num=n_rows)  # to cover y-range of image
+    x_left_fit = fit_vals['a'] * fit_y ** 2 + fit_vals['b'] * fit_y + fit_vals['x0_left']
+    x_right_fit = fit_vals['a'] * fit_y ** 2 + fit_vals['b'] * fit_y + fit_vals['x0_right']
+    return fit_y, x_left_fit, x_right_fit, fit_vals
 
 
 def mask_with_centroids(img, centroids, window_width, window_height):
@@ -280,9 +281,9 @@ def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
     right_line_masked = mask_with_centroids(combo_binary, right_centroids, window_width, window_height)
 
     # Fit lines along the pixels
-    fit_y, left_fit_x, right_fit_x = fit_parallel_polynomials(get_nonzero_pixel_locations(left_line_masked),
-                                                              get_nonzero_pixel_locations(right_line_masked),
-                                                              camera.img_height)
+    fit_y, left_fit_x, right_fit_x, fit_vals = fit_parallel_polynomials(get_nonzero_pixel_locations(left_line_masked),
+                                                                        get_nonzero_pixel_locations(right_line_masked),
+                                                                        camera.img_height)
 
     # Calculate radius of curvature
     left_curvature = find_curvature(left_line_masked, y_eval=camera.img_height - 1)
@@ -290,6 +291,15 @@ def find_lane_in_frame(dashcam_img, camera, dynamic_subplot=None):
 
     # Show the lane in world space
     lane_img = draw_lane(undistorted_img, camera, left_fit_x, right_fit_x, fit_y)
+    font_size, font_thickness = 2, 4
+    cv2.putText(lane_img, "a = {: 10e}".format(fit_vals['a']), org=(0, 50), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=font_size, color=(255, 255, 255), thickness=font_thickness, lineType=cv2.LINE_AA)
+    cv2.putText(lane_img, "b = {: 10e}".format(fit_vals['b']), org=(0, 100), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=font_size, color=(255, 255, 255), thickness=font_thickness, lineType=cv2.LINE_AA)
+    cv2.putText(lane_img, "x0_left = {}".format(fit_vals['x0_left']), org=(0, 150), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=font_size, color=(255, 255, 255), thickness=font_thickness, lineType=cv2.LINE_AA)
+    cv2.putText(lane_img, "x0_right = {}".format(fit_vals['x0_right']), org=(0, 200), fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=font_size, color=(255, 255, 255), thickness=font_thickness, lineType=cv2.LINE_AA)
 
     # Print out everything
     if dynamic_subplot is not None:
