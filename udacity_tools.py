@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 
-def overlay_centroids(img, window_centroids, window_height, window_width):
+def overlay_centroids(img, window_centroids, window_height, window_width, color=(0, 255, 0)):
     if len(window_centroids) > 0:
         # Points used to draw all the left and right windows
         l_points = np.zeros((img.shape[0], img.shape[1]))
@@ -18,13 +18,13 @@ def overlay_centroids(img, window_centroids, window_height, window_width):
             l_mask = window_mask(window_width, window_height, img, window_centroids[level][0], level)
             r_mask = window_mask(window_width, window_height, img, window_centroids[level][1], level)
             # Add graphic points from window mask here to total pixels found
-            l_points[(l_points == 255) | ((l_mask == 1))] = 255
-            r_points[(r_points == 255) | ((r_mask == 1))] = 255
+            l_points[(l_points == 255) | ((l_mask == 1))] = 1
+            r_points[(r_points == 255) | ((r_mask == 1))] = 1
 
         # Draw the results
         template = np.array(r_points + l_points, np.uint8)  # add both left and right window pixels together
-        zero_channel = np.zeros_like(template)  # create a zero color channel
-        template = np.array(cv2.merge((zero_channel, template, zero_channel)), np.uint8)  # make window pixels green
+        template = np.array(cv2.merge((template * color[0], template * color[1], template * color[2])),
+                            np.uint8)  # make window pixels green
         if len(img.shape) == 2 or img.shape[2] == 1:
             img = np.array(cv2.merge((img, img, img)), np.uint8)  # making 3 color channels
         return cv2.addWeighted(img, 1, template, 0.5, 0.0)  # overlay the original image with window results

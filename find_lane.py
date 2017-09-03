@@ -91,39 +91,32 @@ def threshold_lanes(image, base_threshold=50, thresh_window=411):
     return binary
 
 
-def find_window_centroids(image, window_width, window_height, margin):
+def find_window_centers(image, window_width, window_height, margin):
     img_h, img_w = image.shape[0:2]
     window_lr_centroids = []  # Store the (left,right) window centroid positions per level
 
-    # Find the start of the line, along the bottom of the image
-    search_strip = image[2 * img_h // 3:, :]  # search bottom 1/3rd of image
-    strip_scores = score_columns(search_strip, window_width)
-    l_line_center = argmax_between(strip_scores, begin=0, end=img_w // 2)
-    r_line_center = argmax_between(strip_scores, begin=img_w // 2, end=img_w)
-
-    # Add what we found for the first layer
-    window_lr_centroids.append((l_line_center, r_line_center))
+    # Get a starting guess for the line
+    img_strip = image[2 * img_h // 3:, :]  # search bottom 1/3rd of image
+    column_scores = score_columns(img_strip, window_width)
+    last_window_left = argmax_between(column_scores, begin=0, end=img_w // 2)
+    last_window_right = argmax_between(column_scores, begin=img_w // 2, end=img_w)
 
     # Go through each layer looking for max pixel locations
-    for level in range(1, image.shape[0] // window_height):
-        search_strip = image[img_h - (level + 1) * window_height:img_h - level * window_height, :]
-        strip_scores = score_columns(search_strip, window_width)
+    for level in range(0, image.shape[0] // window_height):
+        img_strip = image[img_h - (level + 1) * window_height:img_h - level * window_height, :]
+        column_scores = score_columns(img_strip, window_width)
 
-        # Find the best left centroid nearby the centroid from the row below
-        l_search_min = max(l_line_center - margin, 0)
-        l_search_max = min(l_line_center + margin, img_w)
-        l_max_ndx = argmax_between(strip_scores, l_search_min, l_search_max)
+        # Find the best left window
+        l_max_ndx = argmax_between(column_scores, 0, img_w // 2 - 1)
 
-        # Find the best right centroid nearby the centroid from the row below
-        r_search_min = max(r_line_center - margin, 0)
-        r_search_max = min(r_line_center + margin, img_w)
-        r_max_ndx = argmax_between(strip_scores, r_search_min, r_search_max)
+        # Find the best right window
+        r_max_ndx = argmax_between(column_scores, img_w // 2, img_w)
 
-        # Update predicted line center, unless there were no pixels in search region (ie max was zero).
-        l_line_center = l_max_ndx if strip_scores[l_max_ndx] != 0 else l_line_center
-        r_line_center = r_max_ndx if strip_scores[r_max_ndx] != 0 else r_line_center
+        # If there were no pixels in search region (ie max was zero), reuse the last window.
+        last_window_left = l_max_ndx if column_scores[l_max_ndx] != 0 else last_window_left
+        last_window_right = r_max_ndx if column_scores[r_max_ndx] != 0 else last_window_right
 
-        window_lr_centroids.append((l_line_center, r_line_center))
+        window_lr_centroids.append((last_window_left, last_window_right))
 
     return window_lr_centroids
 
@@ -277,7 +270,7 @@ def find_lane_in_frame(dashcam_img, camera, window_trackers, dynamic_subplot=Non
     window_width = 81
     window_height = 100
     margin = 50
-    window_centers = find_window_centroids(combo_binary, window_width, window_height, margin)
+    window_centers = find_window_centers(combo_binary, window_width, window_height, margin)
 
     # Filter window selection
     windows_left, windows_right = zip(*window_centers)
@@ -333,7 +326,7 @@ def find_lane_in_frame(dashcam_img, camera, window_trackers, dynamic_subplot=Non
 
 
 class CurveTracker:
-    def __init__(self, n_points, meas_var=1000, process_var=0.5):
+    def __init__(self, n_points, meas_var=100, process_var=1.0):
         self.curve_points = [Kalman1D(meas_var, process_var) for i in range(n_points)]
 
     def update(self, curve_points_pos):
@@ -348,7 +341,7 @@ class CurveTracker:
 
 
 class Kalman1D:
-    def __init__(self, meas_var, process_var, log_likelihood_min=-10.0, pos_init=0, uncertainty_init=10000):
+    def __init__(self, meas_var, process_var, log_likelihood_min=-100.0, pos_init=0, uncertainty_init=10 ** 9):
         """
         A one dimensional Kalman filter used to track the position of a single point along one axis.
 
