@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Finds lane lines and their curvature from dashcam input_video.
+Finds lane lines and their curvature from camera input_video.
 
 Author: Peter Moran
 Created: 8/1/2017
@@ -16,6 +16,9 @@ from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import KalmanFilter, logpdf
 from imageio.core import NeedDownloadError
 from scipy.ndimage.filters import convolve as center_convolve
+
+from dynamic_subplot import DynamicSubplot
+from udacity_tools import overlay_windows, single_window_mask
 
 # Import moviepy and install ffmpeg if needed.
 try:
@@ -34,50 +37,6 @@ except NeedDownloadError as download_err:
         # Unknown download error
         raise download_err
 
-from udacity_tools import overlay_centroids, window_mask
-
-
-class DynamicSubplot:
-    def __init__(self, m, n):
-        self.figure, self.plots = plt.subplots(m, n)
-        self.plots = self.plots.flatten()
-        self.__curr_plot = -1
-
-    def imshow(self, img, title, cmap=None):
-        """Shows the image in the next plot."""
-        self.next_subplot()
-        self.plots[self.__curr_plot].imshow(img, cmap=cmap)
-        self.plots[self.__curr_plot].set_title(title)
-
-    def skip_plot(self):
-        """Sets the plot to empty and advances to the next plot."""
-        self.next_subplot()
-        self.plots[self.__curr_plot].axis('off')
-
-    def call(self, func_name, *args, **kwargs):
-        self.next_subplot()
-        func = getattr(self.plots[self.__curr_plot], func_name)
-        func(*args, **kwargs)
-
-    def modify_plot(self, func_name, *args, **kwargs):
-        """Allows you to call any function on the current plot."""
-        if self.__curr_plot == -1:
-            raise IndexError("There is no plot to modify.")
-        func = getattr(self.plots[self.__curr_plot], func_name)
-        func(*args, **kwargs)
-
-    def next_subplot(self, n=1):
-        """Increments to the next plot."""
-        self.__curr_plot += n
-        if self.__curr_plot > len(self.plots):
-            raise IndexError("You've gone too far forward. There are no more subplots.")
-
-    def last_subplot(self, n=1):
-        """Increments to the next plot."""
-        self.__curr_plot -= n
-        if self.__curr_plot < 0:
-            raise IndexError("You've gone too far back. There are no more subplots.")
-
 
 def threshold_lanes(image, base_threshold=50, thresh_window=411):
     # Mask the image
@@ -91,7 +50,7 @@ def threshold_lanes(image, base_threshold=50, thresh_window=411):
     return binary
 
 
-def find_window_centers(image, window_width, window_height, margin):
+def find_window_centers(image, window_width, window_height):
     img_h, img_w = image.shape[0:2]
     window_lr_centroids = []  # Store the (left,right) window centroid positions per level
 
@@ -129,7 +88,7 @@ def score_columns(image, window_width):
     return scores
 
 
-def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
+def argmax_between(arr: np.ndarray, begin: int, end: int):
     max_ndx = np.argmax(arr[begin:end]) + begin
     return max_ndx
 
@@ -145,23 +104,8 @@ def get_nonzero_pixel_locations(binary_img):
     return x, y
 
 
-def fit_pixels(binary_img):
-    """
-    Returns the polynomial that fits the pixels in a binary image, as well as the (x,y) pairs for the polynomial
-    it forms on the image.
-    """
-    # Calculate fit
-    x, y = get_nonzero_pixel_locations(binary_img)
-    fit = np.polyfit(y, x, 2)  # we want x according to y
-
-    # Determine the location of the polynomial fit line for each row of the image
-    y = np.linspace(0, binary_img.shape[1] - 1, num=binary_img.shape[1])  # to cover y-range of image
-    x = fit[0] * y ** 2 + fit[1] * y + fit[2]
-
-    return fit, x, y
-
-
 def fit_parallel_polynomials(points_left, points_right, n_rows):
+    # TODO: Split function in half and make more generalizable.
     # Define global model to fit
     x_left, y_left, x_right, y_right = symfit.variables('x_left, y_left, x_right, y_right')
     a, b, x0_left, x0_right = symfit.parameters('a, b, x0_left, x0_right')
@@ -185,14 +129,14 @@ def fit_parallel_polynomials(points_left, points_right, n_rows):
     return y_fit, x_left_fit, x_right_fit, fit_vals
 
 
-def mask_with_centroids(img, centroids, window_width, window_height):
-    if len(centroids) <= 0:
+def mask_windows(img, centers, window_width, window_height):
+    if len(centers) <= 0:
         return
     # Create a mask of all window areas
     mask = np.zeros_like(img)
-    for level in range(0, len(centroids)):
+    for level in range(0, len(centers)):
         # Find the mask for this window
-        this_windows_mask = window_mask(window_width, window_height, img, centroids[level], level)
+        this_windows_mask = single_window_mask(img, centers[level], window_width, window_height, level)
         # Add it to our overall mask
         mask[(mask == 1) | (this_windows_mask == 1)] = 1
 
@@ -200,22 +144,6 @@ def mask_with_centroids(img, centroids, window_width, window_height):
     masked_img = np.copy(img)
     masked_img[mask != 1] = 0
     return masked_img
-
-
-def find_curvature(binary_img, y_eval):
-    """Returns radius of curvature in meters."""
-    Y_M_PER_PIX = 30 / 720  # meters per pixel in y dimension
-    X_M_PER_PIX = 3.7 / 700  # meters per pixel in x dimension
-
-    # Fit in world space
-    x, y = get_nonzero_pixel_locations(binary_img)
-    fit_cr = np.polyfit(np.array(y) * Y_M_PER_PIX, np.array(x) * X_M_PER_PIX, 2)
-
-    # Calculate the new radii of curvature
-    curvature_rad = ((1 + (2 * fit_cr[0] * y_eval * Y_M_PER_PIX + fit_cr[1]) ** 2) ** 1.5) / np.absolute(
-        2 * fit_cr[0])
-
-    return curvature_rad
 
 
 def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
@@ -226,7 +154,7 @@ def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
     :param left_fit_x: the x values for the left line polynomial at the given y values.
     :param right_fit_x: the x values for the right line polynomial at the given y values.
     :param fit_y: the y values the left and right line x values were calculated at.
-    :return: The undistorted image with the lane overlayed on top of it.
+    :return: The undistorted image with the lane overlaid on top of it.
     """
     # Create an undist_img to draw the lines on
     lane_poly_overhead = np.zeros_like(undist_img).astype(np.uint8)
@@ -244,85 +172,6 @@ def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
 
     # Combine the result with the original undist_img
     return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
-
-
-def find_lane_in_frame(dashcam_img, camera, window_trackers, dynamic_subplot=None):
-    # Undistort
-    undistorted_img = camera.undistort(dashcam_img)
-
-    # Change color space
-    hls = cv2.cvtColor(dashcam_img, cv2.COLOR_BGR2HLS)
-    lightness = hls[:, :, 1]
-    saturation = hls[:, :, 2]
-
-    # Transform
-    transformed_lightness = camera.warp_to_overhead(lightness)
-    transformed_saturation = camera.warp_to_overhead(saturation)
-
-    # Threshold for lanes
-    lightness_binary = threshold_lanes(transformed_lightness)
-    saturation_binary = threshold_lanes(transformed_saturation)
-
-    # Stack binary images
-    combo_binary = lightness_binary + saturation_binary
-
-    # Select lane lines
-    window_width = 81
-    window_height = 100
-    margin = 50
-    window_centers = find_window_centers(combo_binary, window_width, window_height, margin)
-
-    # Filter window selection
-    windows_left, windows_right = zip(*window_centers)
-    window_trackers[0].update(windows_left)
-    window_trackers[1].update(windows_right)
-    windows_left = window_trackers[0].get_estimate()
-    windows_right = window_trackers[1].get_estimate()
-    window_centers = list(zip(windows_left, windows_right))
-
-    # Mask out lane lines according to centroid windows
-    left_line_masked = mask_with_centroids(combo_binary, windows_left, window_width, window_height)
-    right_line_masked = mask_with_centroids(combo_binary, windows_right, window_width, window_height)
-
-    # Ensure windows found something
-    pixel_locs_left = get_nonzero_pixel_locations(left_line_masked)
-    pixel_locs_right = get_nonzero_pixel_locations(right_line_masked)
-    if pixel_locs_left is None or pixel_locs_right is None:
-        # Cannot identify a lane, must skip frame
-        return undistorted_img
-
-    # Fit lines along the pixels
-    fit_y, left_fit_x, right_fit_x, fit_vals = fit_parallel_polynomials(pixel_locs_left, pixel_locs_right,
-                                                                        camera.img_height)
-
-    # Calculate radius of curvature
-    left_curvature = find_curvature(left_line_masked, y_eval=camera.img_height - 1)
-    right_curvature = find_curvature(right_line_masked, y_eval=camera.img_height - 1)
-
-    # Show the lane in world space
-    lane_img = draw_lane(undistorted_img, camera, left_fit_x, right_fit_x, fit_y)
-
-    # Print out everything
-    if dynamic_subplot is not None:
-        dynamic_subplot.imshow(undistorted_img, "Undistorted Road")
-        dynamic_subplot.imshow(lightness, "Lightness Image", cmap='gray')
-        dynamic_subplot.imshow(transformed_lightness, "Overhead Lightness", cmap='gray')
-        dynamic_subplot.imshow(lightness_binary, "Binary Lightness", cmap='gray')
-        dynamic_subplot.skip_plot()
-        dynamic_subplot.imshow(saturation, "Saturation Image", cmap='gray')
-        dynamic_subplot.imshow(transformed_saturation, "Overhead Saturation", cmap='gray')
-        dynamic_subplot.imshow(saturation_binary, "Binary Saturation", cmap='gray')
-        dynamic_subplot.imshow(combo_binary, "Binary Combined", cmap='gray')
-        centroids_img = overlay_centroids(combo_binary, window_centers, window_height, window_width)
-        dynamic_subplot.imshow(centroids_img, "Centroids")
-        dynamic_subplot.imshow(left_line_masked + right_line_masked, "Masked & Fitted Lines", cmap='gray')
-        dynamic_subplot.modify_plot('plot', left_fit_x, fit_y)
-        dynamic_subplot.modify_plot('plot', right_fit_x, fit_y)
-        dynamic_subplot.modify_plot('set_xlim', 0, camera.img_width)
-        dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
-        dynamic_subplot.imshow(lane_img, "Highlighted Lane")
-
-    return lane_img
 
 
 class CurveTracker:
@@ -356,7 +205,7 @@ class Kalman1D:
         # Update function
         self.kf.F = np.array([[1., 1.],
                               [0., 1.]])
-        self.log_likelihood_min = log_likelihood_min;
+        self.log_likelihood_min = log_likelihood_min
 
         # Measurement function
         self.kf.H = np.array([[1., 0.]])
@@ -476,20 +325,160 @@ class DashboardCamera:
                                    dsize=(self.img_width, self.img_height))
 
 
+class LaneFinder:
+    def __init__(self, camera: DashboardCamera):
+        self.camera = camera
+
+        # Window parameters
+        self.window_width = 81
+        self.window_height = 100
+
+        # Two curve trackers, one point for each window
+        n_window_per_lane = camera.img_height // self.window_height
+        self.line_trackers = [CurveTracker(n_points=n_window_per_lane) for i in range(2)]
+
+        # Initialize visuals to empty images
+        VIZ_OPTIONS = ('dash_undistorted', 'overhead', 'saturation', 'saturation_binary', 'lightness',
+                       'lightness_binary', 'pixel_scores', 'windows', 'masked_pixel_scores', 'highlighted_lane')
+        self.visuals = {name: None for name in VIZ_OPTIONS}
+        self.__viz_options = None
+
+    def find_lines(self, img_dashboard, visuals=None):
+        # Account for visualization options
+        if visuals is None:
+            visuals = ['highlighted_lane']
+        self.__viz_options = self.fix_viz_dependencies(visuals)
+
+        # Undistort and transform to overhead view
+        img_dash_undistorted = self.camera.undistort(img_dashboard)
+        img_overhead = self.camera.warp_to_overhead(img_dash_undistorted)
+
+        # Score pixels
+        pixel_scores = self.score_pixels(img_overhead)
+
+        # Select lane lines and mask them out
+        windows_left, windows_right = self.select_windows(pixel_scores)
+        masked_scores_left = mask_windows(pixel_scores, windows_left, self.window_width, self.window_height)
+        masked_scores_right = mask_windows(pixel_scores, windows_right, self.window_width, self.window_height)
+
+        # TODO: Do something if no line found
+
+        # Fit lines to selected scores
+        pixel_locs_left = get_nonzero_pixel_locations(masked_scores_left)
+        pixel_locs_right = get_nonzero_pixel_locations(masked_scores_right)
+        y_fit, x_fit_left, x_fit_right, fit = fit_parallel_polynomials(pixel_locs_left, pixel_locs_right,
+                                                                       self.camera.img_height)
+
+        # TODO: Calculate radius of curvature
+
+        # Log visuals
+        self.save_visual('dash_undistorted', img_dash_undistorted)
+        self.save_visual('overhead', img_overhead)
+        self.save_visual('pixel_scores', pixel_scores,
+                         img_proc_func=lambda img: cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX))
+        self.save_visual('windows', self.visuals['pixel_scores'],
+                         img_proc_func=lambda img: overlay_windows(img, list(zip(windows_left, windows_right)),
+                                                                   self.window_width, self.window_height))
+        self.save_visual('masked_pixel_scores', masked_scores_left + masked_scores_right,
+                         img_proc_func=lambda img: cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX))
+        self.save_visual('highlighted_lane', img_dash_undistorted,
+                         img_proc_func=lambda img: draw_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
+
+        return y_fit, x_fit_left, x_fit_right
+
+    def score_pixels(self, img) -> np.ndarray:
+        # Change color space
+        hls = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
+        img_lightness = hls[:, :, 1]
+        img_saturation = hls[:, :, 2]
+
+        # Threshold for lanes
+        img_binary_L = threshold_lanes(img_lightness)
+        img_binary_S = threshold_lanes(img_saturation)
+
+        # Stack binary images
+        lightness_score = cv2.normalize(img_binary_L, None, 0, 1, cv2.NORM_MINMAX)
+        saturation_score = cv2.normalize(img_binary_S, None, 0, 1, cv2.NORM_MINMAX)
+
+        # Log visuals
+        self.save_visual('saturation', img_lightness)
+        self.save_visual('saturation_binary', img_binary_S)
+        self.save_visual('lightness', img_saturation)
+        self.save_visual('lightness_binary', img_binary_S)
+
+        return lightness_score + saturation_score
+
+    def select_windows(self, pixel_scores) -> (list, list):
+        # Select lane lines
+        window_centers = find_window_centers(pixel_scores, self.window_width, self.window_height)
+
+        # Filter window selection
+        windows_left, windows_right = zip(*window_centers)
+        self.line_trackers[0].update(windows_left)
+        self.line_trackers[1].update(windows_right)
+        left_window_prediction = self.line_trackers[0].get_estimate()
+        right_window_prediction = self.line_trackers[1].get_estimate()
+        return left_window_prediction, right_window_prediction
+
+    def save_visual(self, name, img, img_proc_func=None):
+        if 'all' not in self.__viz_options and name not in self.__viz_options:
+            return  # Don't save this image
+        if img_proc_func is not None:
+            img = img_proc_func(img)
+        if len(img.shape) == 2 or img.shape[2] == 1:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        if len(img.shape) != 3 or img.shape[2] != 3:
+            raise Exception('Image is not 3 channels or could not be converted to 3 channels. Cannot use.')
+        self.visuals[name] = img
+
+    def fix_viz_dependencies(self, viz_options: list):
+        if 'windows' in viz_options:
+            viz_options.append('pixel_scores')
+        return viz_options
+
+    def process_and_return(self, img, visual='highlighted_lane'):
+        self.find_lines(img, [visual])
+        return self.visuals[visual]
+
+    def callback_func(self, visual='highlighted_lane'):
+        return lambda img: self.process_and_return(img, visual=visual)
+
+    def plot_pipeline(self, img):
+        y_fit, x_fit_left, x_fit_right = self.find_lines(img, ['all'])
+        dynamic_subplot = DynamicSubplot(3, 4)
+        dynamic_subplot.imshow(self.visuals['dash_undistorted'], "Undistorted Road")
+        dynamic_subplot.imshow(self.visuals['overhead'], "Overhead", cmap='gray')
+        dynamic_subplot.imshow(self.visuals['lightness'], "Lightness", cmap='gray')
+        dynamic_subplot.imshow(self.visuals['lightness_binary'], "Binary Lightness", cmap='gray')
+        dynamic_subplot.skip_plot()
+        dynamic_subplot.skip_plot()
+        dynamic_subplot.imshow(self.visuals['saturation'], "Saturation", cmap='gray')
+        dynamic_subplot.imshow(self.visuals['saturation_binary'], "Binary Saturation", cmap='gray')
+        dynamic_subplot.imshow(self.visuals['pixel_scores'], "Scores", cmap='gray')
+        dynamic_subplot.imshow(self.visuals['windows'], "Selected Windows")
+        dynamic_subplot.imshow(self.visuals['masked_pixel_scores'], "Masking + Fitted Lines", cmap='gray')
+        dynamic_subplot.modify_plot('plot', x_fit_left, y_fit)
+        dynamic_subplot.modify_plot('plot', x_fit_right, y_fit)
+        dynamic_subplot.modify_plot('set_xlim', 0, camera.img_width)
+        dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
+        dynamic_subplot.imshow(self.visuals['highlighted_lane'], "Highlighted Lane")
+
+
 if __name__ == '__main__':
     # Calibrate using checkerboard
     calibration_img_files = glob.glob('./camera_cal/*.jpg')
     lane_shape = [(584, 458), (701, 458), (295, 665), (1022, 665)]
-    dashcam = DashboardCamera(calibration_img_files, chessboard_size=(9, 6), lane_shape=lane_shape)
+    camera = DashboardCamera(calibration_img_files, chessboard_size=(9, 6), lane_shape=lane_shape)
+
+    # Create lane finder
+    lane_finder = LaneFinder(camera)
 
     if str(sys.argv[1]) == 'test':
         # Run pipeline on test images
         test_imgs = glob.glob('./test_images/*.jpg')
         for img_file in test_imgs[:]:
-            subplots = DynamicSubplot(3, 4)
             img = plt.imread(img_file)
-            find_lane_in_frame(img, dashcam, [CurveTracker(7) for i in range(2)],
-                               dynamic_subplot=subplots)
+            lane_finder.plot_pipeline(img)
 
         # Show all plots
         plt.show()
@@ -499,6 +488,5 @@ if __name__ == '__main__':
         input_vid_file = str(sys.argv[1])
         output_vid_file = 'output_' + input_vid_file
         input_video = VideoFileClip(input_vid_file)
-        linetracker = [CurveTracker(7) for i in range(2)]
-        output_video = input_video.fl_image(lambda image: find_lane_in_frame(image, dashcam, linetracker))
+        output_video = input_video.fl_image(lane_finder.callback_func('windows'))
         output_video.write_videofile(output_vid_file, audio=False)

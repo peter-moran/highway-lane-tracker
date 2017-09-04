@@ -6,17 +6,18 @@ import cv2
 import numpy as np
 
 
-def overlay_centroids(img, window_centroids, window_height, window_width, color=(0, 255, 0)):
-    if len(window_centroids) > 0:
+def overlay_windows(img, centers, width, height, color=(0, 255, 0)):
+    # TODO: Change format of centers to be (all_left, all_right). Generally clean up syntax.
+    if len(centers) > 0:
         # Points used to draw all the left and right windows
         l_points = np.zeros((img.shape[0], img.shape[1]))
         r_points = np.zeros((img.shape[0], img.shape[1]))
 
         # Go through each level and draw the windows
-        for level in range(0, len(window_centroids)):
+        for level in range(0, len(centers)):
             # Window_mask is a function to draw window areas
-            l_mask = window_mask(window_width, window_height, img, window_centroids[level][0], level)
-            r_mask = window_mask(window_width, window_height, img, window_centroids[level][1], level)
+            l_mask = single_window_mask(img, centers[level][0], width, height, level)
+            r_mask = single_window_mask(img, centers[level][1], width, height, level)
             # Add graphic points from window mask here to total pixels found
             l_points[(l_points == 255) | ((l_mask == 1))] = 1
             r_points[(r_points == 255) | ((r_mask == 1))] = 1
@@ -30,7 +31,7 @@ def overlay_centroids(img, window_centroids, window_height, window_width, color=
         return cv2.addWeighted(img, 1, template, 0.5, 0.0)  # overlay the original image with window results
 
 
-def window_mask(width, height, img_ref, center, level):
+def single_window_mask(img_ref, center, width, height, level):
     """
     Creates a rectangular mask centered along x axis at `center` and y axis at `level`*`height` from the bottom of the
     image.
