@@ -12,15 +12,12 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import symfit
-from filterpy.common import Q_discrete_white_noise
-from filterpy.kalman import KalmanFilter, logpdf
 from imageio.core import NeedDownloadError
-from scipy.ndimage.filters import convolve as center_convolve
 
 from dynamic_subplot import DynamicSubplot
-from udacity_tools import overlay_windows, single_window_mask
-
 # Import moviepy and install ffmpeg if needed.
+from windows import overlay_windows, WindowTracker, mask_windows, find_windows
+
 try:
     from moviepy.editor import VideoFileClip
 except NeedDownloadError as download_err:
@@ -48,49 +45,6 @@ def threshold_lanes(image, base_threshold=50, thresh_window=411):
         C=base_threshold * -1)
 
     return binary
-
-
-def find_window_centers(image, window_width, window_height):
-    img_h, img_w = image.shape[0:2]
-    window_lr_centroids = []  # Store the (left,right) window centroid positions per level
-
-    # Get a starting guess for the line
-    img_strip = image[2 * img_h // 3:, :]  # search bottom 1/3rd of image
-    column_scores = score_columns(img_strip, window_width)
-    last_window_left = argmax_between(column_scores, begin=0, end=img_w // 2)
-    last_window_right = argmax_between(column_scores, begin=img_w // 2, end=img_w)
-
-    # Go through each layer looking for max pixel locations
-    for level in range(0, image.shape[0] // window_height):
-        img_strip = image[img_h - (level + 1) * window_height:img_h - level * window_height, :]
-        column_scores = score_columns(img_strip, window_width)
-
-        # Find the best left window
-        l_max_ndx = argmax_between(column_scores, 0, img_w // 2 - 1)
-
-        # Find the best right window
-        r_max_ndx = argmax_between(column_scores, img_w // 2, img_w)
-
-        # If there were no pixels in search region (ie max was zero), reuse the last window.
-        last_window_left = l_max_ndx if column_scores[l_max_ndx] != 0 else last_window_left
-        last_window_right = r_max_ndx if column_scores[r_max_ndx] != 0 else last_window_right
-
-        window_lr_centroids.append((last_window_left, last_window_right))
-
-    return window_lr_centroids
-
-
-def score_columns(image, window_width):
-    assert window_width % 2 != 0, 'window_width must be odd'
-    window = np.ones(window_width)
-    col_sums = np.sum(image, axis=0)
-    scores = center_convolve(col_sums, window, mode='constant')
-    return scores
-
-
-def argmax_between(arr: np.ndarray, begin: int, end: int):
-    max_ndx = np.argmax(arr[begin:end]) + begin
-    return max_ndx
 
 
 def get_nonzero_pixel_locations(binary_img):
@@ -129,23 +83,6 @@ def fit_parallel_polynomials(points_left, points_right, n_rows):
     return y_fit, x_left_fit, x_right_fit, fit_vals
 
 
-def mask_windows(img, centers, window_width, window_height):
-    if len(centers) <= 0:
-        return
-    # Create a mask of all window areas
-    mask = np.zeros_like(img)
-    for level in range(0, len(centers)):
-        # Find the mask for this window
-        this_windows_mask = single_window_mask(img, centers[level], window_width, window_height, level)
-        # Add it to our overall mask
-        mask[(mask == 1) | (this_windows_mask == 1)] = 1
-
-    # Apply the mask
-    masked_img = np.copy(img)
-    masked_img[mask != 1] = 0
-    return masked_img
-
-
 def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
     """
     Take an undistorted dashboard camera image and highlights the lane.
@@ -172,74 +109,6 @@ def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
 
     # Combine the result with the original undist_img
     return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
-
-
-class CurveTracker:
-    def __init__(self, n_points, meas_var=100, process_var=1.0):
-        self.curve_points = [Kalman1D(meas_var, process_var) for i in range(n_points)]
-
-    def update(self, curve_points_pos):
-        if len(curve_points_pos) != len(self.curve_points):
-            raise Exception('curve_points_pos and self.curve_points must have the same length')
-        for i, pos in enumerate(curve_points_pos):
-            self.curve_points[i].update(pos)
-
-    def get_estimate(self):
-        point_positions = [point.get_position() for point in self.curve_points]
-        return point_positions
-
-
-class Kalman1D:
-    def __init__(self, meas_var, process_var, log_likelihood_min=-100.0, pos_init=0, uncertainty_init=10 ** 9):
-        """
-        A one dimensional Kalman filter used to track the position of a single point along one axis.
-
-        State variable:  x = [position,
-                              velocity]
-        Update function: F = [[1, 1],
-                              [0, 1]
-                         AKA a constant velocity model.
-        """
-        self.kf = KalmanFilter(dim_x=2, dim_z=1)
-
-        # Update function
-        self.kf.F = np.array([[1., 1.],
-                              [0., 1.]])
-        self.log_likelihood_min = log_likelihood_min
-
-        # Measurement function
-        self.kf.H = np.array([[1., 0.]])
-
-        # Initial state estimate
-        self.kf.x = np.array([pos_init, 0])
-
-        # Initial Covariance matrix
-        self.kf.P = np.eye(self.kf.dim_x) * uncertainty_init
-
-        # Measurement noise
-        self.kf.R = np.array([[meas_var]])
-
-        # Process noise
-        self.kf.Q = Q_discrete_white_noise(dim=2, dt=1, var=process_var)
-
-    def update(self, pos):
-        """
-        Given an estimate x position, uses the kalman filter to estimate the most likely true position of the
-        lane pixel.
-        :param pos: measured x position of the pixel
-        :return: best estimate of the true x position of the pixel
-        """
-        # Apply outlier rejection using log likelihood
-        pos_log_likelihood = logpdf(pos, np.dot(self.kf.H, self.kf.x), self.kf.S)
-        if pos_log_likelihood <= self.log_likelihood_min:
-            # Log Likelihood is too low, most likely an outlier. Reject this measurement.
-            return
-
-        self.kf.predict()
-        self.kf.update(pos)
-
-    def get_position(self):
-        return self.kf.x[0]
 
 
 class DashboardCamera:
@@ -335,13 +204,16 @@ class LaneFinder:
 
         # Two curve trackers, one point for each window
         n_window_per_lane = camera.img_height // self.window_height
-        self.line_trackers = [CurveTracker(n_points=n_window_per_lane) for i in range(2)]
+        self.line_trackers = [
+            WindowTracker(n_windows=n_window_per_lane, window_size=(self.window_width, self.window_height)) for i in
+            range(2)]
 
         # Initialize visuals to empty images
         VIZ_OPTIONS = ('dash_undistorted', 'overhead', 'saturation', 'saturation_binary', 'lightness',
                        'lightness_binary', 'pixel_scores', 'windows', 'masked_pixel_scores', 'highlighted_lane')
         self.visuals = {name: None for name in VIZ_OPTIONS}
         self.__viz_options = None
+        self.__viz_dependencies = {'windows': ['pixel_scores']}
 
     def find_lines(self, img_dashboard, visuals=None):
         # Account for visualization options
@@ -377,7 +249,7 @@ class LaneFinder:
         self.save_visual('pixel_scores', pixel_scores,
                          img_proc_func=lambda img: cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX))
         self.save_visual('windows', self.visuals['pixel_scores'],
-                         img_proc_func=lambda img: overlay_windows(img, list(zip(windows_left, windows_right)),
+                         img_proc_func=lambda img: overlay_windows(img, (windows_left, windows_right),
                                                                    self.window_width, self.window_height))
         self.save_visual('masked_pixel_scores', masked_scores_left + masked_scores_right,
                          img_proc_func=lambda img: cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX))
@@ -410,10 +282,10 @@ class LaneFinder:
 
     def select_windows(self, pixel_scores) -> (list, list):
         # Select lane lines
-        window_centers = find_window_centers(pixel_scores, self.window_width, self.window_height)
+        windows_left, windows_right = find_windows(pixel_scores, self.window_width, self.window_height)
+        return windows_left, windows_right
 
         # Filter window selection
-        windows_left, windows_right = zip(*window_centers)
         self.line_trackers[0].update(windows_left)
         self.line_trackers[1].update(windows_right)
         left_window_prediction = self.line_trackers[0].get_estimate()
@@ -432,8 +304,10 @@ class LaneFinder:
         self.visuals[name] = img
 
     def fix_viz_dependencies(self, viz_options: list):
-        if 'windows' in viz_options:
-            viz_options.append('pixel_scores')
+        for viz_opt in self.__viz_dependencies:
+            if viz_opt in viz_options:
+                for dependency in self.__viz_dependencies[viz_opt]:
+                    viz_options.append(dependency)
         return viz_options
 
     def process_and_return(self, img, visual='highlighted_lane'):
@@ -475,7 +349,7 @@ if __name__ == '__main__':
 
     if str(sys.argv[1]) == 'test':
         # Run pipeline on test images
-        test_imgs = glob.glob('./test_images/*.jpg')
+        test_imgs = glob.glob('./test_images/test5.jpg')
         for img_file in test_imgs[:]:
             img = plt.imread(img_file)
             lane_finder.plot_pipeline(img)
