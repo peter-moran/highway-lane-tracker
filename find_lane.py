@@ -15,9 +15,9 @@ import symfit
 from imageio.core import NeedDownloadError
 
 from dynamic_subplot import DynamicSubplot
-# Import moviepy and install ffmpeg if needed.
-from windows import overlay_windows, WindowTracker, mask_windows, find_windows
+from windows import mask_windows, WindowTracker
 
+# Import moviepy and install ffmpeg if needed.
 try:
     from moviepy.editor import VideoFileClip
 except NeedDownloadError as download_err:
@@ -195,25 +195,21 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, camera: DashboardCamera):
+    def __init__(self, camera: DashboardCamera, window_size=(81, 100), meas_variance=1000, process_variance=1):
         self.camera = camera
 
         # Window parameters
-        self.window_width = 81
-        self.window_height = 100
-
-        # Two curve trackers, one point for each window
-        n_window_per_lane = camera.img_height // self.window_height
-        self.line_trackers = [
-            WindowTracker(n_windows=n_window_per_lane, window_size=(self.window_width, self.window_height)) for i in
-            range(2)]
+        self.left_windows = \
+            WindowTracker('left', window_size[0], window_size[1], meas_variance, process_variance, camera.img_size)
+        self.right_windows = \
+            WindowTracker('right', window_size[0], window_size[1], meas_variance, process_variance, camera.img_size)
 
         # Initialize visuals to empty images
         VIZ_OPTIONS = ('dash_undistorted', 'overhead', 'saturation', 'saturation_binary', 'lightness',
-                       'lightness_binary', 'pixel_scores', 'windows', 'masked_pixel_scores', 'highlighted_lane')
+                       'lightness_binary', 'pixel_scores', 'windows_raw', 'masked_pixel_scores', 'highlighted_lane')
         self.visuals = {name: None for name in VIZ_OPTIONS}
         self.__viz_options = None
-        self.__viz_dependencies = {'windows': ['pixel_scores']}
+        self.__viz_dependencies = {'windows_raw': ['pixel_scores'], 'windows_filtered': ['pixel_scores']}
 
     def find_lines(self, img_dashboard, visuals=None):
         # Account for visualization options
@@ -229,17 +225,18 @@ class LaneFinder:
         pixel_scores = self.score_pixels(img_overhead)
 
         # Select lane lines and mask them out
-        windows_left, windows_right = self.select_windows(pixel_scores)
-        masked_scores_left = mask_windows(pixel_scores, windows_left, self.window_width, self.window_height)
-        masked_scores_right = mask_windows(pixel_scores, windows_right, self.window_width, self.window_height)
+        self.left_windows.update(pixel_scores)
+        self.right_windows.update(pixel_scores)
+        masked_scores_left = mask_windows(pixel_scores, self.left_windows.windows_filtered)
+        masked_scores_right = mask_windows(pixel_scores, self.right_windows.windows_filtered)
 
-        # TODO: Do something if no line found
+        # TODO: Do something if no pixels found
 
         # Fit lines to selected scores
         pixel_locs_left = get_nonzero_pixel_locations(masked_scores_left)
         pixel_locs_right = get_nonzero_pixel_locations(masked_scores_right)
-        y_fit, x_fit_left, x_fit_right, fit = fit_parallel_polynomials(pixel_locs_left, pixel_locs_right,
-                                                                       self.camera.img_height)
+        y_fit, x_fit_left, x_fit_right, fit = \
+            fit_parallel_polynomials(pixel_locs_left, pixel_locs_right, self.camera.img_height)
 
         # TODO: Calculate radius of curvature
 
@@ -248,9 +245,10 @@ class LaneFinder:
         self.save_visual('overhead', img_overhead)
         self.save_visual('pixel_scores', pixel_scores,
                          img_proc_func=lambda img: cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX))
-        self.save_visual('windows', self.visuals['pixel_scores'],
-                         img_proc_func=lambda img: overlay_windows(img, (windows_left, windows_right),
-                                                                   self.window_width, self.window_height))
+        self.save_visual('windows_raw', self.visuals['pixel_scores'],
+                         img_proc_func=lambda img: self.viz_windows(img, 'raw'))
+        self.save_visual('windows_filtered', self.visuals['pixel_scores'],
+                         img_proc_func=lambda img: self.viz_windows(img, 'filtered'))
         self.save_visual('masked_pixel_scores', masked_scores_left + masked_scores_right,
                          img_proc_func=lambda img: cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX))
         self.save_visual('highlighted_lane', img_dash_undistorted,
@@ -280,18 +278,6 @@ class LaneFinder:
 
         return lightness_score + saturation_score
 
-    def select_windows(self, pixel_scores) -> (list, list):
-        # Select lane lines
-        windows_left, windows_right = find_windows(pixel_scores, self.window_width, self.window_height)
-        return windows_left, windows_right
-
-        # Filter window selection
-        self.line_trackers[0].update(windows_left)
-        self.line_trackers[1].update(windows_right)
-        left_window_prediction = self.line_trackers[0].get_estimate()
-        right_window_prediction = self.line_trackers[1].get_estimate()
-        return left_window_prediction, right_window_prediction
-
     def save_visual(self, name, img, img_proc_func=None):
         if 'all' not in self.__viz_options and name not in self.__viz_options:
             return  # Don't save this image
@@ -309,6 +295,18 @@ class LaneFinder:
                 for dependency in self.__viz_dependencies[viz_opt]:
                     viz_options.append(dependency)
         return viz_options
+
+    def viz_windows(self, img, mode):
+        if mode == 'filtered':
+            lw_img = self.left_windows.img_windows_filtered()
+            rw_img = self.right_windows.img_windows_filtered()
+        elif mode == 'raw':
+            lw_img = self.left_windows.img_windows_raw()
+            rw_img = self.right_windows.img_windows_raw()
+        else:
+            raise Exception('mode is not valid')
+        combined = lw_img + rw_img
+        return cv2.addWeighted(img, 1, combined, 0.5, 0)
 
     def process_and_return(self, img, visual='highlighted_lane'):
         self.find_lines(img, [visual])
@@ -329,7 +327,7 @@ class LaneFinder:
         dynamic_subplot.imshow(self.visuals['saturation'], "Saturation", cmap='gray')
         dynamic_subplot.imshow(self.visuals['saturation_binary'], "Binary Saturation", cmap='gray')
         dynamic_subplot.imshow(self.visuals['pixel_scores'], "Scores", cmap='gray')
-        dynamic_subplot.imshow(self.visuals['windows'], "Selected Windows")
+        dynamic_subplot.imshow(self.visuals['windows_raw'], "Selected Windows")
         dynamic_subplot.imshow(self.visuals['masked_pixel_scores'], "Masking + Fitted Lines", cmap='gray')
         dynamic_subplot.modify_plot('plot', x_fit_left, y_fit)
         dynamic_subplot.modify_plot('plot', x_fit_right, y_fit)
@@ -344,13 +342,11 @@ if __name__ == '__main__':
     lane_shape = [(584, 458), (701, 458), (295, 665), (1022, 665)]
     camera = DashboardCamera(calibration_img_files, chessboard_size=(9, 6), lane_shape=lane_shape)
 
-    # Create lane finder
-    lane_finder = LaneFinder(camera)
-
     if str(sys.argv[1]) == 'test':
         # Run pipeline on test images
-        test_imgs = glob.glob('./test_images/test5.jpg')
+        test_imgs = glob.glob('./test_images/*.jpg')
         for img_file in test_imgs[:]:
+            lane_finder = LaneFinder(camera)  # need new instance to prevent smoothing
             img = plt.imread(img_file)
             lane_finder.plot_pipeline(img)
 
@@ -359,8 +355,9 @@ if __name__ == '__main__':
 
     else:
         # Create video
+        lane_finder = LaneFinder(camera)
         input_vid_file = str(sys.argv[1])
         output_vid_file = 'output_' + input_vid_file
         input_video = VideoFileClip(input_vid_file)
-        output_video = input_video.fl_image(lane_finder.callback_func('windows'))
+        output_video = input_video.fl_image(lane_finder.callback_func('windows_filtered'))
         output_video.write_videofile(output_vid_file, audio=False)
