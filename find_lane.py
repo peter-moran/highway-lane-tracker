@@ -15,7 +15,7 @@ import symfit
 from imageio.core import NeedDownloadError
 
 from dynamic_subplot import DynamicSubplot
-from windows import WindowTracker
+from windows import WindowHandler
 
 # Import moviepy and install ffmpeg if needed.
 try:
@@ -33,66 +33,6 @@ except NeedDownloadError as download_err:
     else:
         # Unknown download error
         raise download_err
-
-
-def threshold_lanes(image, base_threshold=50, thresh_window=411):
-    # Mask the image
-    binary = cv2.adaptiveThreshold(
-        image,
-        maxValue=255, adaptiveMethod=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        thresholdType=cv2.THRESH_BINARY,
-        blockSize=thresh_window,
-        C=base_threshold * -1)
-
-    return binary
-
-
-def fit_parallel_polynomials(points_left, points_right):
-    # Define global model to fit
-    x_left, y_left, x_right, y_right = symfit.variables('x_left, y_left, x_right, y_right')
-    a, b, x0_left, x0_right = symfit.parameters('a, b, x0_left, x0_right')
-
-    model = symfit.Model({
-        x_left: a * y_left ** 2 + b * y_left + x0_left,
-        x_right: a * y_right ** 2 + b * y_right + x0_right
-    })
-
-    # Apply fit
-    xl, yl = points_left
-    xr, yr = points_right
-    fit = symfit.Fit(model, x_left=xl, y_left=yl, x_right=xr, y_right=yr)
-    fit = fit.execute()
-    fit_vals = {'a': fit.value(a), 'b': fit.value(b), 'x0_left': fit.value(x0_left), 'x0_right': fit.value(x0_right)}
-
-    return fit_vals
-
-
-def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
-    """
-    Take an undistorted dashboard camera image and highlights the lane.
-    :param undist_img: An undistorted dashboard view image.
-    :param camera: The DashboardCamera object for the camera the image was taken on.
-    :param left_fit_x: the x values for the left line polynomial at the given y values.
-    :param right_fit_x: the x values for the right line polynomial at the given y values.
-    :param fit_y: the y values the left and right line x values were calculated at.
-    :return: The undistorted image with the lane overlaid on top of it.
-    """
-    # Create an undist_img to draw the lines on
-    lane_poly_overhead = np.zeros_like(undist_img).astype(np.uint8)
-
-    # Recast the x and y points into usable format for cv2.fillPoly()
-    pts_left = np.array([np.transpose(np.vstack([np.array(left_fit_x), fit_y]))])
-    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fit_x, fit_y])))])
-    pts = np.hstack((pts_left, pts_right))
-
-    # Draw the lane onto the warped blank undist_img
-    cv2.fillPoly(lane_poly_overhead, np.int_([pts]), (0, 255, 0))
-
-    # Warp back to original undist_img space
-    lane_poly_dash = camera.warp_to_dashboard(lane_poly_overhead)
-
-    # Combine the result with the original undist_img
-    return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
 
 
 class DashboardCamera:
@@ -179,14 +119,15 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, camera: DashboardCamera, window_size=(61, 120), meas_variance=100, process_variance=1):
+    def __init__(self, camera: DashboardCamera, window_shape=(120, 61),
+                 meas_variance=100, process_variance=1, log_likelihood_min=-20):
         self.camera = camera
 
         # Window parameters
         self.left_windows = \
-            WindowTracker('left', window_size[0], window_size[1], meas_variance, process_variance, camera.img_size)
+            WindowHandler('left', window_shape, meas_variance, process_variance, log_likelihood_min, camera.img_size)
         self.right_windows = \
-            WindowTracker('right', window_size[0], window_size[1], meas_variance, process_variance, camera.img_size)
+            WindowHandler('right', window_shape, meas_variance, process_variance, log_likelihood_min, camera.img_size)
 
         # State
         self.last_fit_vals = None
@@ -215,20 +156,13 @@ class LaneFinder:
         # Score pixels
         pixel_scores = self.score_pixels(img_overhead)
 
-        # Select lane lines and mask them out
+        # Select windows_raw
         self.left_windows.update(pixel_scores)
         self.right_windows.update(pixel_scores)
-        fit_vals = fit_parallel_polynomials(zip(*self.left_windows.get_positions('filtered')),
-                                            zip(*self.right_windows.get_positions('filtered')))
 
-        # Filter fit
-        if self.last_fit_vals is not None:
-            factors = [0.8, 0.2]
-            fit_vals['a'] = fit_vals['a'] * factors[0] + self.last_fit_vals['a'] * factors[1]
-            fit_vals['b'] = fit_vals['b'] * factors[0] + self.last_fit_vals['b'] * factors[1]
-            fit_vals['x0_left'] = fit_vals['x0_left'] * factors[0] + self.last_fit_vals['x0_left'] * factors[1]
-            fit_vals['x0_right'] = fit_vals['x0_right'] * factors[0] + self.last_fit_vals['x0_right'] * factors[1]
-        self.last_fit_vals = fit_vals
+        # Filter window positions
+        fit_vals = self.fit_lanes(zip(*self.left_windows.get_positions('filtered')),
+                                  zip(*self.right_windows.get_positions('filtered')))
 
         # Determine the location of the polynomial fit line for each row of the image
         y_fit = np.linspace(0, camera.img_height - 1, num=camera.img_height).flatten()  # to cover y-range of image
@@ -247,7 +181,7 @@ class LaneFinder:
         self.save_visual('windows_filtered', self.visuals['pixel_scores'],
                          img_proc_func=lambda img: self.viz_windows(img, 'filtered'))
         self.save_visual('highlighted_lane', img_dash_undistorted,
-                         img_proc_func=lambda img: draw_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
+                         img_proc_func=lambda img: self.draw_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
 
         return y_fit, x_fit_left, x_fit_right
 
@@ -258,8 +192,8 @@ class LaneFinder:
         img_saturation = hls[:, :, 2]
 
         # Threshold for lanes
-        img_binary_L = threshold_lanes(img_lightness)
-        img_binary_S = threshold_lanes(img_saturation)
+        img_binary_L = threshold_gaussian(img_lightness)
+        img_binary_S = threshold_gaussian(img_saturation)
 
         # Stack binary images
         lightness_score = cv2.normalize(img_binary_L, None, 0, 1, cv2.NORM_MINMAX)
@@ -272,6 +206,53 @@ class LaneFinder:
         self.save_visual('lightness_binary', img_binary_S)
 
         return lightness_score + saturation_score
+
+    def fit_lanes(self, points_left, points_right):
+        # Define global model to fit
+        x_left, y_left, x_right, y_right = symfit.variables('x_left, y_left, x_right, y_right')
+        a, b, x0_left, x0_right = symfit.parameters('a, b, x0_left, x0_right')
+
+        model = symfit.Model({
+            x_left: a * y_left ** 2 + b * y_left + x0_left,
+            x_right: a * y_right ** 2 + b * y_right + x0_right
+        })
+
+        # Apply fit
+        xl, yl = points_left
+        xr, yr = points_right
+        fit = symfit.Fit(model, x_left=xl, y_left=yl, x_right=xr, y_right=yr)
+        fit = fit.execute()
+        fit_vals = {'a': fit.value(a), 'b': fit.value(b), 'x0_left': fit.value(x0_left),
+                    'x0_right': fit.value(x0_right)}
+
+        return fit_vals
+
+    def draw_lane(self, undist_img, camera, left_fit_x, right_fit_x, fit_y):
+        """
+        Take an undistorted dashboard camera image and highlights the lane.
+        :param undist_img: An undistorted dashboard view image.
+        :param camera: The DashboardCamera object for the camera the image was taken on.
+        :param left_fit_x: the x values for the left line polynomial at the given y values.
+        :param right_fit_x: the x values for the right line polynomial at the given y values.
+        :param fit_y: the y values the left and right line x values were calculated at.
+        :return: The undistorted image with the lane overlaid on top of it.
+        """
+        # Create an undist_img to draw the lines on
+        lane_poly_overhead = np.zeros_like(undist_img).astype(np.uint8)
+
+        # Recast the x and y points into usable format for cv2.fillPoly()
+        pts_left = np.array([np.transpose(np.vstack([np.array(left_fit_x), fit_y]))])
+        pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fit_x, fit_y])))])
+        pts = np.hstack((pts_left, pts_right))
+
+        # Draw the lane onto the warped blank undist_img
+        cv2.fillPoly(lane_poly_overhead, np.int_([pts]), (0, 255, 0))
+
+        # Warp back to original undist_img space
+        lane_poly_dash = camera.warp_to_dashboard(lane_poly_overhead)
+
+        # Combine the result with the original undist_img
+        return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
 
     def save_visual(self, name, img, img_proc_func=None):
         if 'all' not in self.__viz_options and name not in self.__viz_options:
@@ -329,6 +310,18 @@ class LaneFinder:
         dynamic_subplot.modify_plot('set_xlim', 0, camera.img_width)
         dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
         dynamic_subplot.imshow(self.visuals['highlighted_lane'], "Highlighted Lane")
+
+
+def threshold_gaussian(image, base_threshold=50, thresh_window=411):
+    # Mask the image
+    binary = cv2.adaptiveThreshold(
+        image,
+        maxValue=255, adaptiveMethod=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        thresholdType=cv2.THRESH_BINARY,
+        blockSize=thresh_window,
+        C=base_threshold * -1)
+
+    return binary
 
 
 if __name__ == '__main__':

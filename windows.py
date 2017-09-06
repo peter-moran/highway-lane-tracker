@@ -4,29 +4,29 @@ from typing import List
 import cv2
 import numpy as np
 from filterpy.common import Q_discrete_white_noise
-from filterpy.kalman import KalmanFilter
-from filterpy.stats import logpdf
+from filterpy.kalman import KalmanFilter, logpdf
 from scipy.ndimage.filters import gaussian_filter
 
 
 class Window:
-    def __init__(self, level, width, height, img_shape):
-        if width % 2 == 0:
+    def __init__(self, level, window_shape, img_shape, x_init):
+        if window_shape[1] % 2 == 0:
             raise Exception("width must be odd")
-        self.width = width
-        self.height = height
-        self.img_w = img_shape[1]
+        self.height = window_shape[0]
+        self.width = window_shape[1]
         self.img_h = img_shape[0]
-
-        self.y_begin = self.img_h - (level + 1) * self.height
-        self.y_end = self.y_begin + height
-        self.y = self.y_begin + height / 2.0
-        self.x = None
-
+        self.img_w = img_shape[1]
         self.level = level
+
+        self.y_begin = self.img_h - (level + 1) * self.height  # top row of pixels for window
+        self.y_end = self.y_begin + self.height  # one past the bottom row of pixels for window
+
+        self.x = x_init
+        self.y = self.y_begin + self.height / 2.0
 
         self.magnitude = None
         self.noise_magnitude = None
+        self.detected = False
 
     def x_begin(self):
         return int(max(0, self.x - self.width // 2))
@@ -40,57 +40,72 @@ class Window:
         return self.magnitude / (self.magnitude + self.noise_magnitude)
 
 
-class WindowTracker:
-    def __init__(self, mode, window_width, window_height, meas_variance, process_variance, img_shape):
-        if not (mode == 'left' or mode == 'right'):
+class WindowHandler:
+    def __init__(self, mode, window_shape, meas_var, process_var, log_likelihood_min, img_shape):
+        # Set mode
+        if mode == 'left':
+            x_init = img_shape[1] / 4
+        elif mode == 'right':
+            x_init = (img_shape[1] / 4) * 3
+        else:
             raise Exception('Not a valid mode. Should be `left` or `right`')
         self.__mode = mode
-        self.windows_raw = [Window(lvl, window_width, window_height, img_shape)
-                            for lvl in range(img_shape[0] // window_height)]
-        self.windows_filtered = deepcopy(self.windows_raw)
-        self.filters = [Kalman1D(meas_variance, process_variance, log_likelihood_min=-20) for i in
+
+        # Create windows
+        self.windows_raw = \
+            [Window(lvl, window_shape, img_shape, x_init) for lvl in range(img_shape[0] // window_shape[0])]
+        self.windows_filtered = \
+            deepcopy(self.windows_raw)
+
+        # Create filters
+        self.filters = [Kalman1D(meas_var, process_var, log_likelihood_min, pos_init=x_init) for i in
                         range(len(self.windows_raw))]
 
     def update(self, image):
+        # Select image region
         if self.__mode == 'left':
             x_offset = 0
             image = image[:, x_offset: image.shape[1] // 2]
         elif self.__mode == 'right':
             x_offset = image.shape[1] // 2
             image = image[:, x_offset:]
-
-        img_h, img_w = image.shape[:2]
-
-        # Get a starting guess for the line by finding the center of intensity in the bottom section of the image
-        bottom_column_scores = self.gaussian_filter_across_columns(image[2 * img_h // 3:, :], self.windows_raw[0].width)
-        x_last = np.argmax(bottom_column_scores) + x_offset
+        else:
+            raise Exception('self.__mode is not valid. Was it changed?')
 
         # Go through each layer looking for max pixel locations
-        for window in self.windows_raw:
-            search_img = image[window.y_begin:window.y_end, :]
-            column_scores = self.gaussian_filter_across_columns(search_img, window.width)
+        last_x = self.windows_raw[0].x
+        for i, raw_window in enumerate(self.windows_raw):
+            search_img = image[raw_window.y_begin:raw_window.y_end, :]
+            column_scores = self.gaussian_filter_across_columns(search_img, raw_window.width)
 
             # Find the best window and score it
-            x_max_score = np.argmax(column_scores) + x_offset
-            window.x = x_max_score if max(column_scores) != 0 else x_last  # reuse x_last if no max is found (empty img)
-            window.magnitude = np.sum(column_scores[window.x_begin() - x_offset: window.x_end() - x_offset])
-            window.noise_magnitude = np.sum(column_scores) - window.magnitude
+            if max(column_scores) != 0:
+                # Update raw window
+                raw_window.x = np.argmax(column_scores) + x_offset
+                raw_window.magnitude = np.sum(
+                    column_scores[raw_window.x_begin() - x_offset: raw_window.x_end() - x_offset])
+                raw_window.noise_magnitude = np.sum(column_scores) - raw_window.magnitude
+                raw_window.detected = True
 
-            x_last = window.x
+                # Update filtered windows
+                self.filters[i].update(raw_window.x, confidence=raw_window.signal_noise_ratio())
+                self.windows_filtered[i].x = self.filters[i].get_position()
+                self.windows_filtered[i].detected = True
 
-        # Filter positions
-        for i in range(len(self.windows_raw)):
-            self.filters[i].update(self.windows_raw[i].x, self.windows_raw[i].signal_noise_ratio())
-            self.windows_filtered[i].x = self.filters[i].get_position()
+                last_x = self.windows_filtered[i].x
+            else:
+                self.windows_filtered[i].x = last_x
+                raw_window.detected = False
+                self.windows_filtered[i].detected = False
 
-    def get_positions(self, mode):
+    def get_positions(self, mode, drop_undetected=False):
         if mode == 'raw':
             windows = self.windows_raw
         elif mode == 'filtered':
             windows = self.windows_filtered
         else:
             raise Exception('Not a valid mode. Should be `raw` or `filtered`')
-        return [(window.x, window.y) for window in windows]
+        return [(window.x, window.y) for window in windows if window.detected or not drop_undetected]
 
     def gaussian_filter_across_columns(self, img, width):
         return gaussian_filter(np.sum(img, axis=0), sigma=width / 3, truncate=3.0)
@@ -108,9 +123,11 @@ def get_window_img(windows: List[Window], color, show_signal_noise_ratio):
     return np.array(cv2.merge((mask * color[0], mask * color[1], mask * color[2])), np.uint8)
 
 
-def create_window_mask(windows: List[Window], intensity_func=None):
+def create_window_mask(windows: List[Window], intensity_func=None, drop_undetected=False):
     mask = np.zeros((windows[0].img_h, windows[0].img_w))
     for window in windows:
+        if drop_undetected and not window.detected:
+            continue
         single_window_mask = get_window_mask(window)
         scale = intensity_func(window) if intensity_func is not None else 1
         mask[single_window_mask > 0] = 1 * scale
@@ -132,7 +149,7 @@ def get_window_mask(window: Window):
 
 
 class Kalman1D:
-    def __init__(self, meas_var, process_var, log_likelihood_min=None, pos_init=0.0, uncertainty_init=2 ** 30):
+    def __init__(self, meas_var, process_var, log_likelihood_min, pos_init=0.0, uncertainty_init=2 ** 30):
         """
         A one dimensional Kalman filter used to track the position of a single point along one axis.
 
@@ -147,7 +164,6 @@ class Kalman1D:
         # Update function
         self.kf.F = np.array([[1., 1],
                               [0., 0.75]])
-        self.log_likelihood_min = log_likelihood_min
 
         # Measurement function
         self.kf.H = np.array([[1., 0.]])
@@ -160,6 +176,7 @@ class Kalman1D:
 
         # Measurement noise
         self.base_meas_var = meas_var
+        self.log_likelihood_min = log_likelihood_min
         self.kf.R = np.array([[self.base_meas_var]])
 
         # Process noise
