@@ -204,6 +204,12 @@ class LaneFinder:
         self.right_windows = \
             WindowTracker('right', window_size[0], window_size[1], meas_variance, process_variance, camera.img_size)
 
+        # State
+        self.last_masked_pixel_scores = [np.zeros(camera.img_size), np.zeros(camera.img_size)]
+        for i in range(camera.img_height):
+            self.last_masked_pixel_scores[0][i, camera.img_width // 4] = 1
+            self.last_masked_pixel_scores[1][i, (camera.img_width // 4) * 3] = 1
+
         # Initialize visuals to empty images
         VIZ_OPTIONS = ('dash_undistorted', 'overhead', 'saturation', 'saturation_binary', 'lightness',
                        'lightness_binary', 'pixel_scores', 'windows_raw', 'masked_pixel_scores', 'highlighted_lane')
@@ -230,7 +236,15 @@ class LaneFinder:
         masked_scores_left = mask_windows(pixel_scores, self.left_windows.windows_filtered)
         masked_scores_right = mask_windows(pixel_scores, self.right_windows.windows_filtered)
 
-        # TODO: Do something if no pixels found
+        # Reuse old scores if none found
+        if np.max(masked_scores_left) == 0:
+            masked_scores_left = self.last_masked_pixel_scores[0]
+        else:
+            self.last_masked_pixel_scores[0] = masked_scores_left
+        if np.max(masked_scores_right) == 0:
+            masked_scores_right = self.last_masked_pixel_scores[1]
+        else:
+            self.last_masked_pixel_scores[1] = masked_scores_right
 
         # Fit lines to selected scores
         pixel_locs_left = get_nonzero_pixel_locations(masked_scores_left)
@@ -342,11 +356,12 @@ if __name__ == '__main__':
     lane_shape = [(584, 458), (701, 458), (295, 665), (1022, 665)]
     camera = DashboardCamera(calibration_img_files, chessboard_size=(9, 6), lane_shape=lane_shape)
 
+    argc = len(sys.argv)
     if str(sys.argv[1]) == 'test':
         # Run pipeline on test images
-        test_imgs = glob.glob('./test_images/test5.jpg')
+        test_imgs = glob.glob('./test_images/*.jpg')
         for img_file in test_imgs[:]:
-            lane_finder = LaneFinder(camera)  # need new instance to prevent smoothing
+            lane_finder = LaneFinder(camera)  # need new instance per image to prevent smoothing
             img = plt.imread(img_file)
             lane_finder.plot_pipeline(img)
 
@@ -354,10 +369,13 @@ if __name__ == '__main__':
         plt.show()
 
     else:
+        # Video options
+        input_vid_file = str(sys.argv[1])
+        output_vid_file = str(sys.argv[2]) if argc >= 3 else 'output_' + input_vid_file
+        visual = str(sys.argv[3]) if argc >= 4 else 'highlighted_lane'
+
         # Create video
         lane_finder = LaneFinder(camera)
-        input_vid_file = str(sys.argv[1])
-        output_vid_file = 'output_' + input_vid_file
         input_video = VideoFileClip(input_vid_file)
-        output_video = input_video.fl_image(lane_finder.callback_func('highlighted_lane'))
+        output_video = input_video.fl_image(lane_finder.callback_func(visual))
         output_video.write_videofile(output_vid_file, audio=False)
