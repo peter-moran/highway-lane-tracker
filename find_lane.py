@@ -15,7 +15,7 @@ import symfit
 from imageio.core import NeedDownloadError
 
 from dynamic_subplot import DynamicSubplot
-from windows import mask_windows, WindowTracker
+from windows import WindowTracker
 
 # Import moviepy and install ffmpeg if needed.
 try:
@@ -45,17 +45,6 @@ def threshold_lanes(image, base_threshold=50, thresh_window=411):
         C=base_threshold * -1)
 
     return binary
-
-
-def get_nonzero_pixel_locations(binary_img):
-    """
-    Returns the x, y locations of all nonzero pixels.
-    """
-    points = np.argwhere(binary_img)
-    if len(points) == 0:
-        return None
-    y, x = zip(*points)  # mapping r,c -> y,x format.
-    return x, y
 
 
 def fit_parallel_polynomials(points_left, points_right):
@@ -190,7 +179,7 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, camera: DashboardCamera, window_size=(151, 120), meas_variance=100, process_variance=1):
+    def __init__(self, camera: DashboardCamera, window_size=(61, 120), meas_variance=100, process_variance=1):
         self.camera = camera
 
         # Window parameters
@@ -229,27 +218,12 @@ class LaneFinder:
         # Select lane lines and mask them out
         self.left_windows.update(pixel_scores)
         self.right_windows.update(pixel_scores)
-        masked_scores_left = mask_windows(pixel_scores, self.left_windows.windows_filtered)
-        masked_scores_right = mask_windows(pixel_scores, self.right_windows.windows_filtered)
-
-        # Reuse old scores if none found
-        if np.max(masked_scores_left) == 0:
-            masked_scores_left = self.last_masked_pixel_scores[0]
-        else:
-            self.last_masked_pixel_scores[0] = masked_scores_left
-        if np.max(masked_scores_right) == 0:
-            masked_scores_right = self.last_masked_pixel_scores[1]
-        else:
-            self.last_masked_pixel_scores[1] = masked_scores_right
-
-        # Fit lines to selected scores
-        pixel_locs_left = get_nonzero_pixel_locations(masked_scores_left)
-        pixel_locs_right = get_nonzero_pixel_locations(masked_scores_right)
-        fit_vals = fit_parallel_polynomials(pixel_locs_left, pixel_locs_right)
+        fit_vals = fit_parallel_polynomials(zip(*self.left_windows.get_positions('filtered')),
+                                            zip(*self.right_windows.get_positions('filtered')))
 
         # Filter fit
         if self.last_fit_vals is not None:
-            factors = [0.9, 0.1]
+            factors = [0.8, 0.2]
             fit_vals['a'] = fit_vals['a'] * factors[0] + self.last_fit_vals['a'] * factors[1]
             fit_vals['b'] = fit_vals['b'] * factors[0] + self.last_fit_vals['b'] * factors[1]
             fit_vals['x0_left'] = fit_vals['x0_left'] * factors[0] + self.last_fit_vals['x0_left'] * factors[1]
@@ -272,8 +246,6 @@ class LaneFinder:
                          img_proc_func=lambda img: self.viz_windows(img, 'raw'))
         self.save_visual('windows_filtered', self.visuals['pixel_scores'],
                          img_proc_func=lambda img: self.viz_windows(img, 'filtered'))
-        self.save_visual('masked_pixel_scores', masked_scores_left + masked_scores_right,
-                         img_proc_func=lambda img: cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX))
         self.save_visual('highlighted_lane', img_dash_undistorted,
                          img_proc_func=lambda img: draw_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
 
@@ -380,8 +352,8 @@ if __name__ == '__main__':
     else:
         # Video options
         input_vid_file = str(sys.argv[1])
-        output_vid_file = str(sys.argv[2]) if argc >= 3 else 'output_' + input_vid_file
-        visual = str(sys.argv[3]) if argc >= 4 else 'highlighted_lane'
+        visual = str(sys.argv[2]) if argc >= 3 else 'highlighted_lane'
+        output_vid_file = str(sys.argv[3]) if argc >= 4 else 'output_' + input_vid_file
 
         # Create video
         lane_finder = LaneFinder(camera)

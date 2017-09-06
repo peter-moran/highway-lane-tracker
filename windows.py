@@ -18,9 +18,10 @@ class Window:
         self.img_w = img_shape[1]
         self.img_h = img_shape[0]
 
-        self.x = None
         self.y_begin = self.img_h - (level + 1) * self.height
         self.y_end = self.y_begin + height
+        self.y = self.y_begin + height / 2.0
+        self.x = None
 
         self.level = level
 
@@ -81,6 +82,15 @@ class WindowTracker:
         for i in range(len(self.windows_raw)):
             self.filters[i].update(self.windows_raw[i].x, self.windows_raw[i].signal_noise_ratio())
             self.windows_filtered[i].x = self.filters[i].get_position()
+
+    def get_positions(self, mode):
+        if mode == 'raw':
+            windows = self.windows_raw
+        elif mode == 'filtered':
+            windows = self.windows_filtered
+        else:
+            raise Exception('Not a valid mode. Should be `raw` or `filtered`')
+        return [(window.x, window.y) for window in windows]
 
     def gaussian_filter_across_columns(self, img, width):
         return gaussian_filter(np.sum(img, axis=0), sigma=width / 3, truncate=3.0)
