@@ -85,7 +85,7 @@ class WindowTracker:
     def gaussian_filter_across_columns(self, img, width):
         return gaussian_filter(np.sum(img, axis=0), sigma=width / 3, truncate=3.0)
 
-    def img_windows_raw(self, color=(0, 0, 255), show_signal_noise_ratio=True):
+    def img_windows_raw(self, color=(0, 255, 0), show_signal_noise_ratio=True):
         return get_window_img(self.windows_raw, color, show_signal_noise_ratio)
 
     def img_windows_filtered(self, color=(0, 0, 255)):
@@ -135,8 +135,8 @@ class Kalman1D:
         self.kf = KalmanFilter(dim_x=2, dim_z=1)
 
         # Update function
-        self.kf.F = np.array([[1., 1.],
-                              [0., 1.]])
+        self.kf.F = np.array([[1., 1],
+                              [0., 0.75]])
         self.log_likelihood_min = log_likelihood_min
 
         # Measurement function

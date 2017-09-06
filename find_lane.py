@@ -195,7 +195,7 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, camera: DashboardCamera, window_size=(81, 100), meas_variance=1000, process_variance=1):
+    def __init__(self, camera: DashboardCamera, window_size=(151, 120), meas_variance=100, process_variance=1):
         self.camera = camera
 
         # Window parameters
@@ -344,7 +344,7 @@ if __name__ == '__main__':
 
     if str(sys.argv[1]) == 'test':
         # Run pipeline on test images
-        test_imgs = glob.glob('./test_images/*.jpg')
+        test_imgs = glob.glob('./test_images/test5.jpg')
         for img_file in test_imgs[:]:
             lane_finder = LaneFinder(camera)  # need new instance to prevent smoothing
             img = plt.imread(img_file)
@@ -359,5 +359,5 @@ if __name__ == '__main__':
         input_vid_file = str(sys.argv[1])
         output_vid_file = 'output_' + input_vid_file
         input_video = VideoFileClip(input_vid_file)
-        output_video = input_video.fl_image(lane_finder.callback_func('windows_filtered'))
+        output_video = input_video.fl_image(lane_finder.callback_func('highlighted_lane'))
         output_video.write_videofile(output_vid_file, audio=False)
