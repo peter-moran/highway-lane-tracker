@@ -58,8 +58,7 @@ def get_nonzero_pixel_locations(binary_img):
     return x, y
 
 
-def fit_parallel_polynomials(points_left, points_right, n_rows):
-    # TODO: Split function in half and make more generalizable.
+def fit_parallel_polynomials(points_left, points_right):
     # Define global model to fit
     x_left, y_left, x_right, y_right = symfit.variables('x_left, y_left, x_right, y_right')
     a, b, x0_left, x0_right = symfit.parameters('a, b, x0_left, x0_right')
@@ -76,11 +75,7 @@ def fit_parallel_polynomials(points_left, points_right, n_rows):
     fit = fit.execute()
     fit_vals = {'a': fit.value(a), 'b': fit.value(b), 'x0_left': fit.value(x0_left), 'x0_right': fit.value(x0_right)}
 
-    # Determine the location of the polynomial fit line for each row of the image
-    y_fit = np.linspace(0, n_rows - 1, num=n_rows).flatten()  # to cover y-range of image
-    x_left_fit = fit_vals['a'] * y_fit ** 2 + fit_vals['b'] * y_fit + fit_vals['x0_left']
-    x_right_fit = fit_vals['a'] * y_fit ** 2 + fit_vals['b'] * y_fit + fit_vals['x0_right']
-    return y_fit, x_left_fit, x_right_fit, fit_vals
+    return fit_vals
 
 
 def draw_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
@@ -205,6 +200,7 @@ class LaneFinder:
             WindowTracker('right', window_size[0], window_size[1], meas_variance, process_variance, camera.img_size)
 
         # State
+        self.last_fit_vals = None
         self.last_masked_pixel_scores = [np.zeros(camera.img_size), np.zeros(camera.img_size)]
         for i in range(camera.img_height):
             self.last_masked_pixel_scores[0][i, camera.img_width // 4] = 1
@@ -249,8 +245,21 @@ class LaneFinder:
         # Fit lines to selected scores
         pixel_locs_left = get_nonzero_pixel_locations(masked_scores_left)
         pixel_locs_right = get_nonzero_pixel_locations(masked_scores_right)
-        y_fit, x_fit_left, x_fit_right, fit = \
-            fit_parallel_polynomials(pixel_locs_left, pixel_locs_right, self.camera.img_height)
+        fit_vals = fit_parallel_polynomials(pixel_locs_left, pixel_locs_right)
+
+        # Filter fit
+        if self.last_fit_vals is not None:
+            factors = [0.9, 0.1]
+            fit_vals['a'] = fit_vals['a'] * factors[0] + self.last_fit_vals['a'] * factors[1]
+            fit_vals['b'] = fit_vals['b'] * factors[0] + self.last_fit_vals['b'] * factors[1]
+            fit_vals['x0_left'] = fit_vals['x0_left'] * factors[0] + self.last_fit_vals['x0_left'] * factors[1]
+            fit_vals['x0_right'] = fit_vals['x0_right'] * factors[0] + self.last_fit_vals['x0_right'] * factors[1]
+        self.last_fit_vals = fit_vals
+
+        # Determine the location of the polynomial fit line for each row of the image
+        y_fit = np.linspace(0, camera.img_height - 1, num=camera.img_height).flatten()  # to cover y-range of image
+        x_fit_left = fit_vals['a'] * y_fit ** 2 + fit_vals['b'] * y_fit + fit_vals['x0_left']
+        x_fit_right = fit_vals['a'] * y_fit ** 2 + fit_vals['b'] * y_fit + fit_vals['x0_right']
 
         # TODO: Calculate radius of curvature
 
