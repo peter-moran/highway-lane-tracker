@@ -160,8 +160,8 @@ class LaneFinder:
         self.right_windows.update(pixel_scores)
 
         # Filter window positions
-        fit_vals = self.fit_lanes(zip(*self.left_windows.get_positions('filtered')),
-                                  zip(*self.right_windows.get_positions('filtered')))
+        fit_vals = self.fit_lanes(zip(*self.left_windows.get_positions('filtered', drop_undetected=True)),
+                                  zip(*self.right_windows.get_positions('filtered', drop_undetected=True)))
 
         # Determine the location of the polynomial fit line for each row of the image
         y_fit = np.linspace(0, camera.img_height - 1, num=camera.img_height).flatten()  # to cover y-range of image
@@ -169,6 +169,8 @@ class LaneFinder:
         x_fit_right = fit_vals['a'] * y_fit ** 2 + fit_vals['b'] * y_fit + fit_vals['x0_right']
 
         # TODO: Calculate radius of curvature
+
+        # TODO: Calculate position in lane.
 
         # Log visuals
         self.save_visual('dash_undistorted', img_dash_undistorted)

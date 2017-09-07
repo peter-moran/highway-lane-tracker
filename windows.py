@@ -34,6 +34,9 @@ class Window:
     def x_end(self):
         return int(min(self.x + self.width // 2, self.img_w))
 
+    def area(self):
+        return self.height * self.width
+
     def signal_noise_ratio(self):
         if self.magnitude == 0:
             return 0.0
@@ -87,6 +90,10 @@ class WindowHandler:
                 raw_window.noise_magnitude = np.sum(column_scores) - raw_window.magnitude
                 raw_window.detected = True
 
+                if raw_window.noise_magnitude < raw_window.area() * 0.05 or raw_window.signal_noise_ratio() < 0.6:
+                    # Bad measurement, don't use
+                    continue
+
                 # Update filtered windows
                 self.filters[i].update(raw_window.x, confidence=raw_window.signal_noise_ratio())
                 self.windows_filtered[i].x = self.filters[i].get_position()
@@ -96,7 +103,7 @@ class WindowHandler:
             else:
                 self.windows_filtered[i].x = last_x
                 raw_window.detected = False
-                self.windows_filtered[i].detected = False
+                # self.windows_filtered[i].detected = False
 
     def get_positions(self, mode, drop_undetected=False):
         if mode == 'raw':
@@ -123,7 +130,7 @@ def get_window_img(windows: List[Window], color, show_signal_noise_ratio):
     return np.array(cv2.merge((mask * color[0], mask * color[1], mask * color[2])), np.uint8)
 
 
-def create_window_mask(windows: List[Window], intensity_func=None, drop_undetected=False):
+def create_window_mask(windows: List[Window], intensity_func=None, drop_undetected=True):
     mask = np.zeros((windows[0].img_h, windows[0].img_w))
     for window in windows:
         if drop_undetected and not window.detected:
@@ -155,15 +162,12 @@ class Kalman1D:
 
         State variable:  x = [position,
                               velocity]
-        Update function: F = [[1, 1],
-                              [0, 1]
-                         AKA a constant velocity model.
         """
         self.kf = KalmanFilter(dim_x=2, dim_z=1)
 
         # Update function
-        self.kf.F = np.array([[1., 1],
-                              [0., 0.75]])
+        self.kf.F = np.array([[1., 0.4],
+                              [0., 0.4]])
 
         # Measurement function
         self.kf.H = np.array([[1., 0.]])
