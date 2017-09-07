@@ -15,7 +15,7 @@ import symfit
 from imageio.core import NeedDownloadError
 
 from dynamic_subplot import DynamicSubplot
-from windows import WindowHandler
+from windows import Window, window_batch_positions, window_image
 
 # Import moviepy and install ffmpeg if needed.
 try:
@@ -119,14 +119,19 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, camera: DashboardCamera, window_shape=(120, 61), meas_variance=100, process_variance=1):
+    def __init__(self, camera: DashboardCamera, window_shape=(120, 61)):
         self.camera = camera
 
-        # Window parameters
-        self.left_windows = \
-            WindowHandler('left', window_shape, meas_variance, process_variance, camera.img_size)
-        self.right_windows = \
-            WindowHandler('right', window_shape, meas_variance, process_variance, camera.img_size)
+        # Create windows
+        self.windows_left = []
+        self.windows_right = []
+        for level in range(camera.img_height // window_shape[0]):
+            self.windows_left.append(Window(level, window_shape, camera.img_size,
+                                            x_init=camera.img_width / 4,
+                                            x_search_range=(0, camera.img_width // 2)))
+            self.windows_right.append(Window(level, window_shape, camera.img_size,
+                                             x_init=(camera.img_width / 4) * 3,
+                                             x_search_range=(camera.img_width // 2, camera.img_width)))
 
         # State
         self.last_fit_vals = None
@@ -156,12 +161,17 @@ class LaneFinder:
         pixel_scores = self.score_pixels(img_overhead)
 
         # Select windows_raw
-        self.left_windows.update(pixel_scores)
-        self.right_windows.update(pixel_scores)
+        for i in range(len(self.windows_left)):
+            self.windows_left[i].update(pixel_scores)
+            self.windows_right[i].update(pixel_scores)
 
         # Filter window positions
-        fit_vals = self.fit_lanes(zip(*self.left_windows.get_positions('filtered', drop_undetected=True)),
-                                  zip(*self.right_windows.get_positions('filtered', drop_undetected=True)))
+        fit_vals = self.fit_lanes(zip(*window_batch_positions(self.windows_left, param='x_filtered',
+                                                              include_frozen=True,
+                                                              include_dropped=False)),
+                                  zip(*window_batch_positions(self.windows_right, param='x_filtered',
+                                                              include_frozen=True,
+                                                              include_dropped=False)))
 
         # Determine the location of the polynomial fit line for each row of the image
         y_fit = np.linspace(0, camera.img_height - 1, num=camera.img_height).flatten()  # to cover y-range of image
@@ -275,11 +285,11 @@ class LaneFinder:
 
     def viz_windows(self, img, mode):
         if mode == 'filtered':
-            lw_img = self.left_windows.img_windows_filtered()
-            rw_img = self.right_windows.img_windows_filtered()
+            lw_img = window_image(self.windows_left, 'x_filtered', normal_color=(0, 0, 255))
+            rw_img = window_image(self.windows_right, 'x_filtered', normal_color=(0, 0, 255))
         elif mode == 'raw':
-            lw_img = self.left_windows.img_windows_raw()
-            rw_img = self.right_windows.img_windows_raw()
+            lw_img = window_image(self.windows_left, 'x_measured', normal_color=(0, 255, 0))
+            rw_img = window_image(self.windows_right, 'x_measured', normal_color=(0, 255, 0))
         else:
             raise Exception('mode is not valid')
         combined = lw_img + rw_img
