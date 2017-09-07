@@ -119,15 +119,14 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, camera: DashboardCamera, window_shape=(120, 61),
-                 meas_variance=100, process_variance=1, log_likelihood_min=-20):
+    def __init__(self, camera: DashboardCamera, window_shape=(120, 61), meas_variance=100, process_variance=1):
         self.camera = camera
 
         # Window parameters
         self.left_windows = \
-            WindowHandler('left', window_shape, meas_variance, process_variance, log_likelihood_min, camera.img_size)
+            WindowHandler('left', window_shape, meas_variance, process_variance, camera.img_size)
         self.right_windows = \
-            WindowHandler('right', window_shape, meas_variance, process_variance, log_likelihood_min, camera.img_size)
+            WindowHandler('right', window_shape, meas_variance, process_variance, camera.img_size)
 
         # State
         self.last_fit_vals = None

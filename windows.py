@@ -4,7 +4,7 @@ from typing import List
 import cv2
 import numpy as np
 from filterpy.common import Q_discrete_white_noise
-from filterpy.kalman import KalmanFilter, logpdf
+from filterpy.kalman import KalmanFilter
 from scipy.ndimage.filters import gaussian_filter
 
 
@@ -41,7 +41,7 @@ class Window:
 
 
 class WindowHandler:
-    def __init__(self, mode, window_shape, meas_var, process_var, log_likelihood_min, img_shape):
+    def __init__(self, mode, window_shape, meas_var, process_var, img_shape):
         # Set mode
         if mode == 'left':
             x_init = img_shape[1] / 4
@@ -58,7 +58,7 @@ class WindowHandler:
             deepcopy(self.windows_raw)
 
         # Create filters
-        self.filters = [Kalman1D(meas_var, process_var, log_likelihood_min, pos_init=x_init) for i in
+        self.filters = [Kalman1D(meas_var, process_var, pos_init=x_init) for i in
                         range(len(self.windows_raw))]
 
     def update(self, image):
@@ -149,7 +149,7 @@ def get_window_mask(window: Window):
 
 
 class Kalman1D:
-    def __init__(self, meas_var, process_var, log_likelihood_min, pos_init=0.0, uncertainty_init=2 ** 30):
+    def __init__(self, meas_var, process_var, pos_init=0.0, uncertainty_init=2 ** 30):
         """
         A one dimensional Kalman filter used to track the position of a single point along one axis.
 
@@ -176,7 +176,6 @@ class Kalman1D:
 
         # Measurement noise
         self.base_meas_var = meas_var
-        self.log_likelihood_min = log_likelihood_min
         self.kf.R = np.array([[self.base_meas_var]])
 
         # Process noise
@@ -189,13 +188,6 @@ class Kalman1D:
         :param pos: measured x position of the pixel
         :return: best estimate of the true x position of the pixel
         """
-        # Apply outlier rejection using log likelihood
-        if self.log_likelihood_min is not None:
-            pos_log_likelihood = logpdf(pos, np.dot(self.kf.H, self.kf.x), self.kf.S)
-            if pos_log_likelihood <= self.log_likelihood_min:
-                # Log Likelihood is too low, most likely an outlier. Reject this measurement.
-                return
-
         # TODO: Make noise model a passable parameter
         modified_meas_var = np.interp(confidence,
                                       [.4, 0.7, 1],
