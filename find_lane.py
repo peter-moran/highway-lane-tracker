@@ -15,7 +15,7 @@ import symfit
 from imageio.core import NeedDownloadError
 
 from dynamic_subplot import DynamicSubplot
-from windows import Window, window_batch_positions, window_image
+from windows import Window, window_batch_positions, window_image, sliding_window_update
 
 # Import moviepy and install ffmpeg if needed.
 try:
@@ -119,19 +119,16 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, camera: DashboardCamera, window_shape=(120, 61)):
+    def __init__(self, camera: DashboardCamera, window_shape=(120, 61), search_margin=200):
         self.camera = camera
 
         # Create windows
+        self.search_margin = search_margin
         self.windows_left = []
         self.windows_right = []
         for level in range(camera.img_height // window_shape[0]):
-            self.windows_left.append(Window(level, window_shape, camera.img_size,
-                                            x_init=camera.img_width / 4,
-                                            x_search_range=(0, camera.img_width // 2)))
-            self.windows_right.append(Window(level, window_shape, camera.img_size,
-                                             x_init=(camera.img_width / 4) * 3,
-                                             x_search_range=(camera.img_width // 2, camera.img_width)))
+            self.windows_left.append(Window(level, window_shape, camera.img_size, x_init=camera.img_width / 4))
+            self.windows_right.append(Window(level, window_shape, camera.img_size, x_init=(camera.img_width / 4) * 3))
 
         # State
         self.last_fit_vals = None
@@ -161,9 +158,8 @@ class LaneFinder:
         pixel_scores = self.score_pixels(img_overhead)
 
         # Select windows_raw
-        for i in range(len(self.windows_left)):
-            self.windows_left[i].update(pixel_scores)
-            self.windows_right[i].update(pixel_scores)
+        sliding_window_update(self.windows_left, pixel_scores, margin=self.search_margin, mode='left')
+        sliding_window_update(self.windows_right, pixel_scores, margin=self.search_margin, mode='right')
 
         # Filter window positions
         fit_vals = self.fit_lanes(zip(*window_batch_positions(self.windows_left, param='x_filtered',

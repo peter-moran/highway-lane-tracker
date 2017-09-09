@@ -7,7 +7,7 @@ from scipy.ndimage.filters import gaussian_filter
 
 
 class Window:
-    def __init__(self, level, window_shape, img_shape, x_init, x_search_range):
+    def __init__(self, level, window_shape, img_shape, x_init):
         if window_shape[1] % 2 == 0:
             raise Exception("width must be odd")
         # Image info
@@ -27,9 +27,8 @@ class Window:
 
         # Detection info
         self.filter = WindowFilter(pos_init=x_init)
-        self.x_search_range = x_search_range
         self.x_measured = None
-        self.dropped = False
+        self.dropped = True
         self.frozen = False
         self.frozen_dur = 0
         self.max_frozen_dur = 8
@@ -62,13 +61,14 @@ class Window:
         # Quickly grow uncertainty
         self.filter.grow_uncertainty(50)
 
-    def update(self, image):
+    def update(self, image, x_search_range):
         assert image.shape[0] == self.img_h and \
                image.shape[1] == self.img_w, 'Window not parametrized for this image size'
 
         # Apply a column-wise gaussian filter to score the x-positions in this window's search region
-        x_offset = self.x_search_range[0]
-        search_region = image[self.y_begin: self.y_end, x_offset: self.x_search_range[1]]
+        x_search_range = (max(0, int(x_search_range[0])), min(int(x_search_range[1]), self.img_w))
+        x_offset = x_search_range[0]
+        search_region = image[self.y_begin: self.y_end, x_offset: x_search_range[1]]
         column_scores = gaussian_filter(np.sum(search_region, axis=0), sigma=self.width / 3, truncate=3.0)
 
         if max(column_scores) != 0:
@@ -97,6 +97,43 @@ class Window:
         mask = np.zeros((self.img_h, self.img_w))
         mask[self.y_begin: self.y_end, self.x_begin(param): self.x_end(param)] = 1
         return mask
+
+
+def sliding_window_update(windows: List[Window], image, margin, mode):
+    assert mode == 'left' or mode == 'right', "Mode not valid."
+    img_h, img_w = image.shape[0:2]
+
+    # Update the base window
+    if mode == 'left':
+        windows[0].update(image, (0, img_w // 2))
+    elif mode == 'right':
+        windows[0].update(image, (img_w // 2, img_w))
+
+    # Find the starting point for our search
+    if windows[0].dropped:
+        # Starting window does not exist, find an approximation.
+        search_region = image[2 * img_h // 3:, :]  # search bottom 1/3rd of image
+        column_scores = gaussian_filter(np.sum(search_region, axis=0), sigma=windows[0].width / 3, truncate=3.0)
+        if mode == 'left':
+            search_center = argmax_between(column_scores, 0, img_w // 2)
+        elif mode == 'right':
+            search_center = argmax_between(column_scores, img_w // 2, img_w)
+    else:
+        # Already know the position of the base window
+        search_center = windows[0].x_filtered
+
+    # Continue searching nearby the last detected window
+    for window in windows[1:]:
+        x_search_range = (search_center - margin, search_center + margin)
+        window.update(image, x_search_range)
+
+        if not window.dropped:
+            search_center = window.x_filtered
+
+
+def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
+    max_ndx = np.argmax(arr[begin:end]) + begin
+    return max_ndx
 
 
 def window_batch_positions(windows: List[Window], param, include_frozen=True, include_dropped=False):
