@@ -2,7 +2,7 @@ from typing import List
 
 import numpy as np
 from filterpy.common import Q_discrete_white_noise
-from filterpy.kalman import KalmanFilter
+from filterpy.kalman import KalmanFilter, logpdf
 from scipy.ndimage.filters import gaussian_filter
 
 
@@ -29,10 +29,10 @@ class Window:
         self.filter = WindowFilter(pos_init=x_init)
         self.x_search_range = x_search_range
         self.x_measured = None
-        self.dropped = False
+        self.dropped = True
         self.frozen = False
         self.frozen_dur = 0
-        self.max_frozen_dur = 10
+        self.max_frozen_dur = 8
 
     def x_begin(self, param='x_filtered'):
         x = getattr(self, param)
@@ -47,19 +47,25 @@ class Window:
 
     def freeze(self):
         if self.frozen_dur > self.max_frozen_dur:
-            self.dropped = True
+            self.drop()
         else:
             self.frozen = True
         self.frozen_dur += 1
+        self.filter.grow_uncertainty(5)
 
     def unfreeze(self):
         self.frozen_dur = 0
         self.dropped = False
         self.frozen = False
 
+    def drop(self):
+        self.dropped = True
+        # Reset filter
+        self.filter.kf.P = np.eye(self.filter.kf.dim_x) * 2 ** 30
+
     def update(self, image):
-        assert image.shape[0] == self.img_h and image.shape[
-                                                    1] == self.img_w, 'Window not parameterized for this image size'
+        assert image.shape[0] == self.img_h and \
+               image.shape[1] == self.img_w, 'Window not parameterized for this image size'
 
         # Apply a column-wise gaussian filter to score the x-positions in this window's search region
         x_offset = self.x_search_range[0]
@@ -76,7 +82,8 @@ class Window:
                 window_magnitude / (window_magnitude + noise_magnitude) if window_magnitude is not 0 else 0
 
             # Filter measurement and set position
-            if noise_magnitude < self.area() * 0.05 or signal_noise_ratio < 0.6:
+            if signal_noise_ratio < 0.6 or self.filter.loglikelihood(
+                    self.x_measured) < -40:  # noise_magnitude < self.area() * 0.01 or
                 # Bad measurement, don't update filter/position
                 self.freeze()
                 return
@@ -106,33 +113,37 @@ def window_batch_positions(windows: List[Window], param, include_frozen=True, in
     return positions
 
 
-def window_image(windows: List[Window], param='x_filtered', normal_color=(0, 255, 0),
-                 frozen_color=(255, 255, 0), dropeed_color=(0, 0, 0)):
+def window_image(windows: List[Window], param='x_filtered',
+                 color=(0, 255, 0), color_frozen=None, color_dropped=None):
+    if color_frozen is None:
+        color_frozen = [ch * 0.6 for ch in color]
+    if color_dropped is None:
+        color_dropped = [0, 0, 0]
     mask = np.zeros((windows[0].img_h, windows[0].img_w, 3))
     for window in windows:
         if window.dropped:
-            color = dropeed_color
+            color_curr = color_dropped
         elif window.frozen:
-            color = frozen_color
+            color_curr = color_frozen
         else:
-            color = normal_color
-        mask[window.get_mask(param) > 0] = color
+            color_curr = color
+        mask[window.get_mask(param) > 0] = color_curr
     return mask.astype('uint8')
 
 
 class WindowFilter:
-    def __init__(self, pos_init=0.0, meas_variance=100, process_variance=1, uncertainty_init=2 ** 30):
+    def __init__(self, pos_init=0.0, meas_variance=50, process_variance=1, uncertainty_init=2 ** 30):
         """
         A one dimensional Kalman filter tuned to track the position of a window.
 
         State variable:   = [position,
-                              velocity]
+                             velocity]
         """
         self.kf = KalmanFilter(dim_x=2, dim_z=1)
 
-        # Update function
-        self.kf.F = np.array([[1., 0.3],
-                              [0., 0.3]])
+        # State transition function
+        self.kf.F = np.array([[1., 1],
+                              [0., 0.5]])
 
         # Measurement function
         self.kf.H = np.array([[1., 0.]])
@@ -158,6 +169,14 @@ class WindowFilter:
         """
         self.kf.predict()
         self.kf.update(pos)
+
+    def grow_uncertainty(self, mag):
+        """Grows state uncertainty."""
+        # P = FPF' + Q
+        self.kf.P = self.kf.Q * mag
+
+    def loglikelihood(self, pos):
+        return logpdf(pos, np.dot(self.kf.H, self.kf.x), self.kf.S)
 
     def get_position(self):
         return self.kf.x[0]

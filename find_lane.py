@@ -285,11 +285,11 @@ class LaneFinder:
 
     def viz_windows(self, img, mode):
         if mode == 'filtered':
-            lw_img = window_image(self.windows_left, 'x_filtered', normal_color=(0, 0, 255))
-            rw_img = window_image(self.windows_right, 'x_filtered', normal_color=(0, 0, 255))
+            lw_img = window_image(self.windows_left, 'x_filtered', color=(0, 0, 255))
+            rw_img = window_image(self.windows_right, 'x_filtered', color=(0, 0, 255))
         elif mode == 'raw':
-            lw_img = window_image(self.windows_left, 'x_measured', normal_color=(0, 255, 0))
-            rw_img = window_image(self.windows_right, 'x_measured', normal_color=(0, 255, 0))
+            lw_img = window_image(self.windows_left, 'x_measured', color=(0, 255, 0))
+            rw_img = window_image(self.windows_right, 'x_measured', color=(0, 255, 0))
         else:
             raise Exception('mode is not valid')
         combined = lw_img + rw_img
