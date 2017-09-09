@@ -197,26 +197,27 @@ class LaneFinder:
         return y_fit, x_fit_left, x_fit_right
 
     def score_pixels(self, img) -> np.ndarray:
-        # Change color space
-        hls = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
-        img_lightness = hls[:, :, 1]
-        img_saturation = hls[:, :, 2]
+        settings = [{'name': 'lab_b', 'cspace': 'LAB', 'channel': 2, 'clipLimit': 2.0, 'threshold': 150},
+                    {'name': 'value', 'cspace': 'HSV', 'channel': 2, 'clipLimit': 6.0, 'threshold': 220},
+                    {'name': 'lightness', 'cspace': 'HLS', 'channel': 1, 'clipLimit': 2.0, 'threshold': 210}]
 
-        # Threshold for lanes
-        img_binary_L = threshold_gaussian(img_lightness)
-        img_binary_S = threshold_gaussian(img_saturation)
+        scores = np.zeros(img.shape[0:2])
+        for params in settings:
+            # Change color space
+            color_t = getattr(cv2, 'COLOR_RGB2{}'.format(params['cspace']))
+            gray = cv2.cvtColor(img, color_t)[:, :, params['channel']]
 
-        # Stack binary images
-        lightness_score = cv2.normalize(img_binary_L, None, 0, 1, cv2.NORM_MINMAX)
-        saturation_score = cv2.normalize(img_binary_S, None, 0, 1, cv2.NORM_MINMAX)
+            # Threshold to binary
+            clahe = cv2.createCLAHE(params['clipLimit'], tileGridSize=(8, 8))
+            norm_img = clahe.apply(gray)
+            ret, binary = cv2.threshold(norm_img, params['threshold'], 255, cv2.THRESH_BINARY)
+            scores += binary
 
-        # Log visuals
-        self.save_visual('saturation', img_lightness)
-        self.save_visual('saturation_binary', img_binary_S)
-        self.save_visual('lightness', img_saturation)
-        self.save_visual('lightness_binary', img_binary_S)
+            # Save images
+            self.save_visual(params['name'], gray)
+            self.save_visual(params['name'] + '_binary', binary)
 
-        return lightness_score + saturation_score
+        return scores.astype('uint8')
 
     def fit_lanes(self, points_left, points_right):
         # Define global model to fit
