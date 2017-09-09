@@ -2,7 +2,7 @@ from typing import List
 
 import numpy as np
 from filterpy.common import Q_discrete_white_noise
-from filterpy.kalman import KalmanFilter, logpdf
+from filterpy.kalman import KalmanFilter, logpdf, dot3
 from scipy.ndimage.filters import gaussian_filter
 
 
@@ -29,7 +29,7 @@ class Window:
         self.filter = WindowFilter(pos_init=x_init)
         self.x_search_range = x_search_range
         self.x_measured = None
-        self.dropped = True
+        self.dropped = False
         self.frozen = False
         self.frozen_dur = 0
         self.max_frozen_dur = 8
@@ -46,10 +46,9 @@ class Window:
         return self.height * self.width
 
     def freeze(self):
+        self.frozen = True
         if self.frozen_dur > self.max_frozen_dur:
             self.drop()
-        else:
-            self.frozen = True
         self.frozen_dur += 1
         self.filter.grow_uncertainty(5)
 
@@ -60,12 +59,12 @@ class Window:
 
     def drop(self):
         self.dropped = True
-        # Reset filter
-        self.filter.kf.P = np.eye(self.filter.kf.dim_x) * 2 ** 30
+        # Quickly grow uncertainty
+        self.filter.grow_uncertainty(50)
 
     def update(self, image):
         assert image.shape[0] == self.img_h and \
-               image.shape[1] == self.img_w, 'Window not parameterized for this image size'
+               image.shape[1] == self.img_w, 'Window not parametrized for this image size'
 
         # Apply a column-wise gaussian filter to score the x-positions in this window's search region
         x_offset = self.x_search_range[0]
@@ -82,8 +81,7 @@ class Window:
                 window_magnitude / (window_magnitude + noise_magnitude) if window_magnitude is not 0 else 0
 
             # Filter measurement and set position
-            if signal_noise_ratio < 0.6 or self.filter.loglikelihood(
-                    self.x_measured) < -40:  # noise_magnitude < self.area() * 0.01 or
+            if signal_noise_ratio < 0.6 or self.filter.loglikelihood(self.x_measured) < -40:
                 # Bad measurement, don't update filter/position
                 self.freeze()
                 return
@@ -113,14 +111,15 @@ def window_batch_positions(windows: List[Window], param, include_frozen=True, in
     return positions
 
 
-def window_image(windows: List[Window], param='x_filtered',
-                 color=(0, 255, 0), color_frozen=None, color_dropped=None):
+def window_image(windows: List[Window], param='x_filtered', color=(0, 255, 0), color_frozen=None, color_dropped=None):
     if color_frozen is None:
         color_frozen = [ch * 0.6 for ch in color]
     if color_dropped is None:
         color_dropped = [0, 0, 0]
     mask = np.zeros((windows[0].img_h, windows[0].img_w, 3))
     for window in windows:
+        if getattr(window, param) is None:
+            continue
         if window.dropped:
             color_curr = color_dropped
         elif window.frozen:
@@ -173,9 +172,10 @@ class WindowFilter:
     def grow_uncertainty(self, mag):
         """Grows state uncertainty."""
         # P = FPF' + Q
-        self.kf.P = self.kf.Q * mag
+        self.kf.P = self.kf._alpha_sq * dot3(self.kf.F, self.kf.P, self.kf.F.T) + self.kf.Q
 
     def loglikelihood(self, pos):
+        self.kf.S = dot3(self.kf.H, self.kf.P, self.kf.H.T) + self.kf.R
         return logpdf(pos, np.dot(self.kf.H, self.kf.x), self.kf.S)
 
     def get_position(self):

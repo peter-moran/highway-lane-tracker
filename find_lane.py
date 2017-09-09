@@ -142,7 +142,7 @@ class LaneFinder:
 
         # Initialize visuals to empty images
         VIZ_OPTIONS = ('dash_undistorted', 'overhead', 'saturation', 'saturation_binary', 'lightness',
-                       'lightness_binary', 'pixel_scores', 'windows_raw', 'masked_pixel_scores', 'highlighted_lane')
+                       'lightness_binary', 'pixel_scores', 'windows_raw', 'highlighted_lane')
         self.visuals = {name: None for name in VIZ_OPTIONS}
         self.__viz_options = None
         self.__viz_dependencies = {'windows_raw': ['pixel_scores'], 'windows_filtered': ['pixel_scores']}
@@ -312,28 +312,16 @@ class LaneFinder:
         dynamic_subplot.imshow(self.visuals['lightness_binary'], "Binary Lightness", cmap='gray')
         dynamic_subplot.skip_plot()
         dynamic_subplot.skip_plot()
-        dynamic_subplot.imshow(self.visuals['saturation'], "Saturation", cmap='gray')
-        dynamic_subplot.imshow(self.visuals['saturation_binary'], "Binary Saturation", cmap='gray')
+        dynamic_subplot.imshow(self.visuals['value'], "Value", cmap='gray')
+        dynamic_subplot.imshow(self.visuals['value_binary'], "Binary Value", cmap='gray')
         dynamic_subplot.imshow(self.visuals['pixel_scores'], "Scores", cmap='gray')
         dynamic_subplot.imshow(self.visuals['windows_raw'], "Selected Windows")
-        dynamic_subplot.imshow(self.visuals['masked_pixel_scores'], "Masking + Fitted Lines", cmap='gray')
+        dynamic_subplot.imshow(self.visuals['windows_raw'], "Fitted Lines", cmap='gray')
         dynamic_subplot.modify_plot('plot', x_fit_left, y_fit)
         dynamic_subplot.modify_plot('plot', x_fit_right, y_fit)
         dynamic_subplot.modify_plot('set_xlim', 0, camera.img_width)
         dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
         dynamic_subplot.imshow(self.visuals['highlighted_lane'], "Highlighted Lane")
-
-
-def threshold_gaussian(image, base_threshold=50, thresh_window=411):
-    # Mask the image
-    binary = cv2.adaptiveThreshold(
-        image,
-        maxValue=255, adaptiveMethod=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        thresholdType=cv2.THRESH_BINARY,
-        blockSize=thresh_window,
-        C=base_threshold * -1)
-
-    return binary
 
 
 if __name__ == '__main__':
