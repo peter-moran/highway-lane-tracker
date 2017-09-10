@@ -171,8 +171,8 @@ class LaneFinder:
 
         # Determine the location of the polynomial fit line for each row of the image
         y_fit = np.linspace(0, camera.img_height - 1, num=camera.img_height).flatten()  # to cover y-range of image
-        x_fit_left = fit_vals['a'] * y_fit ** 2 + fit_vals['b'] * y_fit + fit_vals['x0_left']
-        x_fit_right = fit_vals['a'] * y_fit ** 2 + fit_vals['b'] * y_fit + fit_vals['x0_right']
+        x_fit_left = fit_vals['al'] * y_fit ** 2 + fit_vals['bl'] * y_fit + fit_vals['x0l']
+        x_fit_right = fit_vals['ar'] * y_fit ** 2 + fit_vals['br'] * y_fit + fit_vals['x0r']
 
         # TODO: Calculate radius of curvature
 
@@ -188,7 +188,7 @@ class LaneFinder:
         self.save_visual('windows_filtered', self.visuals['pixel_scores'],
                          img_proc_func=lambda img: self.viz_windows(img, 'filtered'))
         self.save_visual('highlighted_lane', img_dash_undistorted,
-                         img_proc_func=lambda img: self.draw_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
+                         img_proc_func=lambda img: self.viz_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
 
         return y_fit, x_fit_left, x_fit_right
 
@@ -216,22 +216,24 @@ class LaneFinder:
         return scores.astype('uint8')
 
     def fit_lanes(self, points_left, points_right):
-        # Define global model to fit
-        x_left, y_left, x_right, y_right = symfit.variables('x_left, y_left, x_right, y_right')
-        a, b, x0_left, x0_right = symfit.parameters('a, b, x0_left, x0_right')
+        x, y = symfit.variables('x, y')
+        a, b, x0 = symfit.parameters('a, b, x0')
 
         model = symfit.Model({
-            x_left: a * y_left ** 2 + b * y_left + x0_left,
-            x_right: a * y_right ** 2 + b * y_right + x0_right
+            x: a * y ** 2 + b * y + x0,
         })
 
-        # Apply fit
+        # Apply fit on left
         xl, yl = points_left
-        xr, yr = points_right
-        fit = symfit.Fit(model, x_left=xl, y_left=yl, x_right=xr, y_right=yr)
+        fit = symfit.Fit(model, x=xl, y=yl)
         fit = fit.execute()
-        fit_vals = {'a': fit.value(a), 'b': fit.value(b), 'x0_left': fit.value(x0_left),
-                    'x0_right': fit.value(x0_right)}
+        fit_vals = {'al': fit.value(a), 'bl': fit.value(b), 'x0l': fit.value(x0)}
+
+        # Apply fit on right
+        xr, yr = points_right
+        fit = symfit.Fit(model, x=xr, y=yr)
+        fit = fit.execute()
+        fit_vals.update({'ar': fit.value(a), 'br': fit.value(b), 'x0r': fit.value(x0)})
 
         return fit_vals
 
