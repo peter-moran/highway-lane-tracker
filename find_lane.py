@@ -15,7 +15,7 @@ import symfit
 from imageio.core import NeedDownloadError
 
 from dynamic_subplot import DynamicSubplot
-from windows import Window, get_window_positions, window_image, sliding_window_update
+from windows import Window, filter_window_list, window_image, sliding_window_update
 
 # Import moviepy and install ffmpeg if needed.
 try:
@@ -119,16 +119,14 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, cam: DashboardCamera, window_shape=(80, 61), search_width=300, n_windows=6, max_frozen_dur=15):
+    def __init__(self, cam: DashboardCamera, window_shape=(80, 61), search_width=300, max_frozen_dur=15):
         self.camera = cam
 
         # Create windows
         self.search_margin = search_width / 2
         self.windows_left = []
         self.windows_right = []
-        if n_windows is None:
-            n_windows = cam.img_height // window_shape[0]
-        for level in range(n_windows):
+        for level in range(cam.img_height // window_shape[0]):
             x_init_l = cam.img_width / 4
             x_init_r = cam.img_width / 4 * 3
             self.windows_left.append(Window(level, window_shape, cam.img_size, x_init_l, max_frozen_dur))
@@ -168,15 +166,16 @@ class LaneFinder:
         # TODO: Do something if not enough windows to fit
 
         # Filter window positions
-        fit_vals = self.fit_lanes(zip(*get_window_positions(self.windows_left, param='x_filtered',
-                                                            include_frozen=True,
-                                                            include_dropped=False)),
-                                  zip(*get_window_positions(self.windows_right, param='x_filtered',
-                                                            include_frozen=True,
-                                                            include_dropped=False)))
+        win_left_valid, argvalid_l = filter_window_list(self.windows_left, include_frozen=True, include_dropped=False)
+        win_right_valid, argvalid_r = filter_window_list(self.windows_right, include_frozen=True, include_dropped=False)
+        fit_vals = self.fit_lanes(zip(*[window.pos_xy() for window in win_left_valid]),
+                                  zip(*[window.pos_xy() for window in win_right_valid]))
+
+        # Find a safe region to apply the polynomial fit over. We don't want to extrapolate the shorter lane's extent.
+        short_line_max_ndx = min(argvalid_l[-1], argvalid_r[-1])
 
         # Determine the location of the polynomial fit line for each row of the image
-        y_fit = np.array(range(self.windows_left[-1].y_begin, self.windows_left[0].y_end))
+        y_fit = np.array(range(self.windows_left[short_line_max_ndx].y_begin, self.windows_left[0].y_end))
         x_fit_left = fit_vals['al'] * y_fit ** 2 + fit_vals['bl'] * y_fit + fit_vals['x0l']
         x_fit_right = fit_vals['ar'] * y_fit ** 2 + fit_vals['br'] * y_fit + fit_vals['x0r']
 

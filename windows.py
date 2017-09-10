@@ -98,6 +98,10 @@ class Window:
         mask[self.y_begin: self.y_end, self.x_begin(param): self.x_end(param)] = 1
         return mask
 
+    def pos_xy(self, param='x_filtered'):
+        assert param == 'x_filtered' or param == 'x_measured', 'Invalid position parameter'
+        return getattr(self, param), self.y
+
 
 def sliding_window_update(windows: List[Window], image, margin, mode):
     assert mode == 'left' or mode == 'right', "Mode not valid."
@@ -136,16 +140,18 @@ def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
     return max_ndx
 
 
-def get_window_positions(windows: List[Window], param, include_frozen=True, include_dropped=False):
-    positions = []
-    for window in windows:
+def filter_window_list(windows: List[Window], include_frozen=True, include_dropped=False):
+    ret_windows = []
+    args = []
+    for i, window in enumerate(windows):
         if window.dropped and not include_dropped:
             continue
         elif window.frozen and not include_frozen:
             continue
         else:
-            positions.append((getattr(window, param), window.y))
-    return positions
+            ret_windows.append(window)
+            args.append(i)
+    return ret_windows, args
 
 
 def window_image(windows: List[Window], param='x_filtered', color=(0, 255, 0), color_frozen=None, color_dropped=None):
