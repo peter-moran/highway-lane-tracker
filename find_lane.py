@@ -15,7 +15,7 @@ import symfit
 from imageio.core import NeedDownloadError
 
 from dynamic_subplot import DynamicSubplot
-from windows import Window, window_batch_positions, window_image, sliding_window_update
+from windows import Window, get_window_positions, window_image, sliding_window_update
 
 # Import moviepy and install ffmpeg if needed.
 try:
@@ -119,23 +119,27 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, camera: DashboardCamera, window_shape=(120, 61), search_margin=200):
-        self.camera = camera
+    def __init__(self, cam: DashboardCamera, window_shape=(80, 61), search_width=300, n_windows=6, max_frozen_dur=15):
+        self.camera = cam
 
         # Create windows
-        self.search_margin = search_margin
+        self.search_margin = search_width / 2
         self.windows_left = []
         self.windows_right = []
-        for level in range(camera.img_height // window_shape[0]):
-            self.windows_left.append(Window(level, window_shape, camera.img_size, x_init=camera.img_width / 4))
-            self.windows_right.append(Window(level, window_shape, camera.img_size, x_init=(camera.img_width / 4) * 3))
+        if n_windows is None:
+            n_windows = cam.img_height // window_shape[0]
+        for level in range(n_windows):
+            x_init_l = cam.img_width / 4
+            x_init_r = cam.img_width / 4 * 3
+            self.windows_left.append(Window(level, window_shape, cam.img_size, x_init_l, max_frozen_dur))
+            self.windows_right.append(Window(level, window_shape, cam.img_size, x_init_r, max_frozen_dur))
 
         # State
         self.last_fit_vals = None
-        self.last_masked_pixel_scores = [np.zeros(camera.img_size), np.zeros(camera.img_size)]
-        for i in range(camera.img_height):
-            self.last_masked_pixel_scores[0][i, camera.img_width // 4] = 1
-            self.last_masked_pixel_scores[1][i, (camera.img_width // 4) * 3] = 1
+        self.last_masked_pixel_scores = [np.zeros(cam.img_size), np.zeros(cam.img_size)]
+        for i in range(cam.img_height):
+            self.last_masked_pixel_scores[0][i, cam.img_width // 4] = 1
+            self.last_masked_pixel_scores[1][i, (cam.img_width // 4) * 3] = 1
 
         # Initialize visuals to empty images
         VIZ_OPTIONS = ('dash_undistorted', 'overhead', 'saturation', 'saturation_binary', 'lightness',
@@ -161,16 +165,18 @@ class LaneFinder:
         sliding_window_update(self.windows_left, pixel_scores, margin=self.search_margin, mode='left')
         sliding_window_update(self.windows_right, pixel_scores, margin=self.search_margin, mode='right')
 
+        # TODO: Do something if not enough windows to fit
+
         # Filter window positions
-        fit_vals = self.fit_lanes(zip(*window_batch_positions(self.windows_left, param='x_filtered',
-                                                              include_frozen=True,
-                                                              include_dropped=False)),
-                                  zip(*window_batch_positions(self.windows_right, param='x_filtered',
-                                                              include_frozen=True,
-                                                              include_dropped=False)))
+        fit_vals = self.fit_lanes(zip(*get_window_positions(self.windows_left, param='x_filtered',
+                                                            include_frozen=True,
+                                                            include_dropped=False)),
+                                  zip(*get_window_positions(self.windows_right, param='x_filtered',
+                                                            include_frozen=True,
+                                                            include_dropped=False)))
 
         # Determine the location of the polynomial fit line for each row of the image
-        y_fit = np.linspace(0, camera.img_height - 1, num=camera.img_height).flatten()  # to cover y-range of image
+        y_fit = np.array(range(self.windows_left[-1].y_begin, self.windows_left[0].y_end))
         x_fit_left = fit_vals['al'] * y_fit ** 2 + fit_vals['bl'] * y_fit + fit_vals['x0l']
         x_fit_right = fit_vals['ar'] * y_fit ** 2 + fit_vals['br'] * y_fit + fit_vals['x0r']
 
@@ -215,25 +221,45 @@ class LaneFinder:
 
         return scores.astype('uint8')
 
-    def fit_lanes(self, points_left, points_right):
-        x, y = symfit.variables('x, y')
-        a, b, x0 = symfit.parameters('a, b, x0')
-
-        model = symfit.Model({
-            x: a * y ** 2 + b * y + x0,
-        })
-
-        # Apply fit on left
+    def fit_lanes(self, points_left, points_right, fit_globally=False):
         xl, yl = points_left
-        fit = symfit.Fit(model, x=xl, y=yl)
-        fit = fit.execute()
-        fit_vals = {'al': fit.value(a), 'bl': fit.value(b), 'x0l': fit.value(x0)}
-
-        # Apply fit on right
         xr, yr = points_right
-        fit = symfit.Fit(model, x=xr, y=yr)
-        fit = fit.execute()
-        fit_vals.update({'ar': fit.value(a), 'br': fit.value(b), 'x0r': fit.value(x0)})
+
+        if fit_globally:
+            # Define global model to fit
+            x_left, y_left, x_right, y_right = symfit.variables('x_left, y_left, x_right, y_right')
+            a, b, x0_left, x0_right = symfit.parameters('a, b, x0_left, x0_right')
+
+            model = symfit.Model({
+                x_left: a * y_left ** 2 + b * y_left + x0_left,
+                x_right: a * y_right ** 2 + b * y_right + x0_right
+            })
+
+            # Apply fit
+            xl, yl = points_left
+            xr, yr = points_right
+            fit = symfit.Fit(model, x_left=xl, y_left=yl, x_right=xr, y_right=yr)
+            fit = fit.execute()
+            fit_vals = {'ar': fit.value(a), 'al': fit.value(a), 'bl': fit.value(b), 'br': fit.value(b),
+                        'x0l': fit.value(x0_left), 'x0r': fit.value(x0_right)}
+
+        else:
+            x, y = symfit.variables('x, y')
+            a, b, x0 = symfit.parameters('a, b, x0')
+
+            model = symfit.Model({
+                x: a * y ** 2 + b * y + x0,
+            })
+
+            # Apply fit on left
+            fit = symfit.Fit(model, x=xl, y=yl)
+            fit = fit.execute()
+            fit_vals = {'al': fit.value(a), 'bl': fit.value(b), 'x0l': fit.value(x0)}
+
+            # Apply fit on right
+            fit = symfit.Fit(model, x=xr, y=yr)
+            fit = fit.execute()
+            fit_vals.update({'ar': fit.value(a), 'br': fit.value(b), 'x0r': fit.value(x0)})
 
         return fit_vals
 

@@ -7,7 +7,7 @@ from scipy.ndimage.filters import gaussian_filter
 
 
 class Window:
-    def __init__(self, level, window_shape, img_shape, x_init):
+    def __init__(self, level, window_shape, img_shape, x_init, max_frozen_dur):
         if window_shape[1] % 2 == 0:
             raise Exception("width must be odd")
         # Image info
@@ -31,7 +31,7 @@ class Window:
         self.dropped = True
         self.frozen = False
         self.frozen_dur = 0
-        self.max_frozen_dur = 8
+        self.max_frozen_dur = max_frozen_dur
 
     def x_begin(self, param='x_filtered'):
         x = getattr(self, param)
@@ -136,7 +136,7 @@ def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
     return max_ndx
 
 
-def window_batch_positions(windows: List[Window], param, include_frozen=True, include_dropped=False):
+def get_window_positions(windows: List[Window], param, include_frozen=True, include_dropped=False):
     positions = []
     for window in windows:
         if window.dropped and not include_dropped:
