@@ -7,6 +7,7 @@ Created: 8/1/2017
 """
 import glob
 import sys
+from typing import List
 
 import cv2
 import matplotlib.pyplot as plt
@@ -18,6 +19,7 @@ from dynamic_subplot import DynamicSubplot
 from windows import Window, filter_window_list, window_image, sliding_window_update
 
 # Import moviepy and install ffmpeg if needed.
+REGULATION_LANE_WIDTH = 3.7
 try:
     from moviepy.editor import VideoFileClip
 except NeedDownloadError as download_err:
@@ -36,7 +38,7 @@ except NeedDownloadError as download_err:
 
 
 class DashboardCamera:
-    def __init__(self, chessboard_img_fnames, chessboard_size, lane_shape):
+    def __init__(self, chessboard_img_fnames, chessboard_size, lane_shape, scale_correction=(30 / 720, 3.7 / 700)):
         """
         Class for dashboard camera calibration, perspective warping, and mainlining various properties.
         :param chessboard_img_fnames: List of files name locations for the calibration images.
@@ -52,6 +54,8 @@ class DashboardCamera:
 
         # Calibrate
         self.camera_matrix, self.distortion_coeffs = self.calibrate(chessboard_img_fnames, chessboard_size)
+        self.y_m_per_pix = scale_correction[0]
+        self.x_m_per_pix = scale_correction[1]
 
         # Define overhead transform and its inverse
         top_left, top_right, bottom_left, bottom_right = lane_shape
@@ -144,7 +148,8 @@ class LaneFinder:
                        'lightness_binary', 'pixel_scores', 'windows_raw', 'highlighted_lane')
         self.visuals = {name: None for name in VIZ_OPTIONS}
         self.__viz_options = None
-        self.__viz_dependencies = {'windows_raw': ['pixel_scores'], 'windows_filtered': ['pixel_scores']}
+        self.__viz_dependencies = {'windows_raw': ['pixel_scores'], 'windows_filtered': ['pixel_scores'],
+                                   'presentation': ['highlighted_lane']}
 
     def find_lines(self, img_dashboard, visuals=None):
         # Account for visualization options
@@ -179,9 +184,12 @@ class LaneFinder:
         x_fit_left = fit_vals['al'] * y_fit ** 2 + fit_vals['bl'] * y_fit + fit_vals['x0l']
         x_fit_right = fit_vals['ar'] * y_fit ** 2 + fit_vals['br'] * y_fit + fit_vals['x0r']
 
-        # TODO: Calculate radius of curvature
+        # Calculate radius of curvature
+        curve_rad = self.calc_curvature(win_left_valid)
 
-        # TODO: Calculate position in lane.
+        # Calculate position in lane.
+        img_center = camera.img_width / 2
+        position_prcnt = np.interp(img_center, [x_fit_left[-1], x_fit_right[-1]], [0, 1])
 
         # Log visuals
         self.save_visual('dash_undistorted', img_dash_undistorted)
@@ -194,6 +202,8 @@ class LaneFinder:
                          img_proc_func=lambda img: self.viz_windows(img, 'filtered'))
         self.save_visual('highlighted_lane', img_dash_undistorted,
                          img_proc_func=lambda img: self.viz_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
+        self.save_visual('presentation', self.visuals['highlighted_lane'],
+                         img_proc_func=lambda img: self.viz_presentation(img, position_prcnt, curve_rad))
 
         return y_fit, x_fit_left, x_fit_right
 
@@ -262,6 +272,16 @@ class LaneFinder:
 
         return fit_vals
 
+    def calc_curvature(self, windows: List[Window]):
+        """From Udacity"""
+        x, y = zip(*[window.pos_xy() for window in windows])
+        x = np.array(x)
+        y = np.array(y)
+        fit_cr = np.polyfit(y * camera.y_m_per_pix, x * camera.x_m_per_pix, 2)
+        y_eval = np.max(y)
+        return ((1 + (2 * fit_cr[0] * y_eval * camera.y_m_per_pix + fit_cr[1]) ** 2) ** 1.5) / np.absolute(
+            2 * fit_cr[0])
+
     def save_visual(self, name, img, img_proc_func=None):
         if 'all' not in self.__viz_options and name not in self.__viz_options:
             return  # Don't save this image
@@ -307,6 +327,31 @@ class LaneFinder:
         # Combine the result with the original undist_img
         return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
 
+    def viz_presentation(self, lane_img, position_prcnt, curve_rad):
+        presentation_img = np.copy(lane_img)
+        world_position = position_prcnt * REGULATION_LANE_WIDTH
+
+        # Show position
+        line_start = (10, 100)
+        line_len = 300
+        cv2.putText(presentation_img, "Position", org=(0, 50), fontScale=2, thickness=3,
+                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, lineType=cv2.LINE_AA, color=(255, 255, 255))
+        cv2.line(presentation_img, color=(255, 255, 255), thickness=2,
+                 pt1=(line_start[0], line_start[1]),
+                 pt2=(line_start[0] + line_len, line_start[1]))
+        cv2.circle(presentation_img, center=(line_start[0] + int(position_prcnt * line_len), line_start[1]), radius=8,
+                   color=(255, 255, 255))
+        cv2.putText(presentation_img, '{:.2f} m'.format(world_position), fontScale=1, thickness=1,
+                    org=(line_start[0] + int(position_prcnt * line_len) + 5, line_start[1] + 35),
+                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, color=(255, 255, 255), lineType=cv2.LINE_AA)
+
+        # Show radius of curvature
+        cv2.putText(presentation_img, "Curvature = {:>4.0f} m".format(curve_rad), org=(0, 200), fontScale=1,
+                    thickness=2,
+                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, color=(255, 255, 255), lineType=cv2.LINE_AA)
+
+        return presentation_img
+
     def viz_windows(self, img, mode):
         if mode == 'filtered':
             lw_img = window_image(self.windows_left, 'x_filtered', color=(0, 0, 255))
@@ -339,11 +384,11 @@ class LaneFinder:
         dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
         dynamic_subplot.imshow(self.visuals['highlighted_lane'], "Highlighted Lane")
 
-    def viz_find_lines(self, img, visual='highlighted_lane'):
+    def viz_find_lines(self, img, visual='presentation'):
         self.find_lines(img, [visual])
         return self.visuals[visual]
 
-    def viz_callback(self, visual='highlighted_lane'):
+    def viz_callback(self, visual='presentation'):
         return lambda img: self.viz_find_lines(img, visual=visual)
 
 
@@ -368,7 +413,7 @@ if __name__ == '__main__':
     else:
         # Video options
         input_vid_file = str(sys.argv[1])
-        visual = str(sys.argv[2]) if argc >= 3 else 'highlighted_lane'
+        visual = str(sys.argv[2]) if argc >= 3 else 'presentation'
         output_vid_file = str(sys.argv[3]) if argc >= 4 else 'output_' + input_vid_file
 
         # Create video
