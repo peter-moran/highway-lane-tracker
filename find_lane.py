@@ -235,7 +235,25 @@ class LaneFinder:
 
         return fit_vals
 
-    def draw_lane(self, undist_img, camera, left_fit_x, right_fit_x, fit_y):
+    def save_visual(self, name, img, img_proc_func=None):
+        if 'all' not in self.__viz_options and name not in self.__viz_options:
+            return  # Don't save this image
+        if img_proc_func is not None:
+            img = img_proc_func(img)
+        if len(img.shape) == 2 or img.shape[2] == 1:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        if len(img.shape) != 3 or img.shape[2] != 3:
+            raise Exception('Image is not 3 channels or could not be converted to 3 channels. Cannot use.')
+        self.visuals[name] = img
+
+    def fix_viz_dependencies(self, viz_options: list):
+        for viz_opt in self.__viz_dependencies:
+            if viz_opt in viz_options:
+                for dependency in self.__viz_dependencies[viz_opt]:
+                    viz_options.append(dependency)
+        return viz_options
+
+    def viz_lane(self, undist_img, camera, left_fit_x, right_fit_x, fit_y):
         """
         Take an undistorted dashboard camera image and highlights the lane.
         :param undist_img: An undistorted dashboard view image.
@@ -262,24 +280,6 @@ class LaneFinder:
         # Combine the result with the original undist_img
         return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
 
-    def save_visual(self, name, img, img_proc_func=None):
-        if 'all' not in self.__viz_options and name not in self.__viz_options:
-            return  # Don't save this image
-        if img_proc_func is not None:
-            img = img_proc_func(img)
-        if len(img.shape) == 2 or img.shape[2] == 1:
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-        if len(img.shape) != 3 or img.shape[2] != 3:
-            raise Exception('Image is not 3 channels or could not be converted to 3 channels. Cannot use.')
-        self.visuals[name] = img
-
-    def fix_viz_dependencies(self, viz_options: list):
-        for viz_opt in self.__viz_dependencies:
-            if viz_opt in viz_options:
-                for dependency in self.__viz_dependencies[viz_opt]:
-                    viz_options.append(dependency)
-        return viz_options
-
     def viz_windows(self, img, mode):
         if mode == 'filtered':
             lw_img = window_image(self.windows_left, 'x_filtered', color=(0, 0, 255))
@@ -292,14 +292,7 @@ class LaneFinder:
         combined = lw_img + rw_img
         return cv2.addWeighted(img, 1, combined, 0.5, 0)
 
-    def process_and_return(self, img, visual='highlighted_lane'):
-        self.find_lines(img, [visual])
-        return self.visuals[visual]
-
-    def callback_func(self, visual='highlighted_lane'):
-        return lambda img: self.process_and_return(img, visual=visual)
-
-    def plot_pipeline(self, img):
+    def viz_pipeline(self, img):
         y_fit, x_fit_left, x_fit_right = self.find_lines(img, ['all'])
         dynamic_subplot = DynamicSubplot(3, 4)
         dynamic_subplot.imshow(self.visuals['dash_undistorted'], "Undistorted Road")
@@ -319,6 +312,13 @@ class LaneFinder:
         dynamic_subplot.modify_plot('set_ylim', camera.img_height, 0)
         dynamic_subplot.imshow(self.visuals['highlighted_lane'], "Highlighted Lane")
 
+    def viz_find_lines(self, img, visual='highlighted_lane'):
+        self.find_lines(img, [visual])
+        return self.visuals[visual]
+
+    def viz_callback(self, visual='highlighted_lane'):
+        return lambda img: self.viz_find_lines(img, visual=visual)
+
 
 if __name__ == '__main__':
     # Calibrate using checkerboard
@@ -333,7 +333,7 @@ if __name__ == '__main__':
         for img_file in test_imgs[:]:
             lane_finder = LaneFinder(camera)  # need new instance per image to prevent smoothing
             img = plt.imread(img_file)
-            lane_finder.plot_pipeline(img)
+            lane_finder.viz_pipeline(img)
 
         # Show all plots
         plt.show()
@@ -347,5 +347,5 @@ if __name__ == '__main__':
         # Create video
         lane_finder = LaneFinder(camera)
         input_video = VideoFileClip(input_vid_file)
-        output_video = input_video.fl_image(lane_finder.callback_func(visual))
+        output_video = input_video.fl_image(lane_finder.viz_callback(visual))
         output_video.write_videofile(output_vid_file, audio=False)
