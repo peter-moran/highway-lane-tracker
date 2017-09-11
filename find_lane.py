@@ -38,6 +38,7 @@ except NeedDownloadError as download_err:
 
 REGULATION_LANE_WIDTH = 3.7
 
+
 class DashboardCamera:
     def __init__(self, chessboard_img_fnames, chessboard_size, lane_shape, scale_correction=(30 / 720, 3.7 / 700)):
         """
@@ -127,37 +128,6 @@ class DashboardCamera:
                                    dsize=(self.img_width, self.img_height))
 
 
-def viz_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
-    """
-    Take an undistorted dashboard camera image and highlights the lane.
-
-    Code from Udacity SDC-ND Term 1 course code.
-
-    :param undist_img: An undistorted dashboard view image.
-    :param camera: The DashboardCamera object for the camera the image was taken on.
-    :param left_fit_x: the x values for the left line polynomial at the given y values.
-    :param right_fit_x: the x values for the right line polynomial at the given y values.
-    :param fit_y: the y values the left and right line x values were calculated at.
-    :return: The undistorted image with the lane overlaid on top of it.
-    """
-    # Create an undist_img to draw the lines on
-    lane_poly_overhead = np.zeros_like(undist_img).astype(np.uint8)
-
-    # Recast the x and y points into usable format for cv2.fillPoly()
-    pts_left = np.array([np.transpose(np.vstack([np.array(left_fit_x), fit_y]))])
-    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fit_x, fit_y])))])
-    pts = np.hstack((pts_left, pts_right))
-
-    # Draw the lane onto the warped blank undist_img
-    cv2.fillPoly(lane_poly_overhead, np.int_([pts]), (0, 255, 0))
-
-    # Warp back to original undist_img space
-    lane_poly_dash = camera.warp_to_dashboard(lane_poly_overhead)
-
-    # Combine the result with the original undist_img
-    return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
-
-
 class LaneFinder:
     def __init__(self, cam: DashboardCamera, window_shape=(80, 61), search_margin=300, max_frozen_dur=15):
         """
@@ -184,11 +154,14 @@ class LaneFinder:
 
         # Initialize visuals
         VIZ_OPTIONS = ('dash_undistorted', 'overhead', 'lab_b', 'lab_b_binary', 'lightness', 'lightness_binary',
-                       'value', 'value_binary', 'pixel_scores', 'windows_raw', 'highlighted_lane', 'presentation')
+                       'value', 'value_binary', 'pixel_scores', 'windows_raw', 'windows_filtered', 'highlighted_lane',
+                       'presentation')
         self.visuals = {name: None for name in VIZ_OPTIONS}  # Storage location of visualization images
         self.__viz_desired = None  # The visuals we want to save
-        self.__viz_dependencies = {'windows_raw': ['pixel_scores'], 'windows_filtered': ['pixel_scores'],
-                                   'presentation': ['highlighted_lane']}  # Dependencies of visuals on other visuals
+        self.__viz_dependencies = {'windows_raw': ['pixel_scores'],  # Dependencies of visuals on other visuals
+                                   'windows_filtered': ['pixel_scores'],
+                                   'presentation': ['highlighted_lane', 'overhead', 'windows_raw', 'windows_filtered',
+                                                    'pixel_scores']}
 
     def find_lines(self, img_dashboard, visuals=None):
         """
@@ -420,10 +393,20 @@ class LaneFinder:
         presentation_img = np.copy(lane_img)
         lane_position_prcnt = lane_position / lane_width
 
+        # Show overlays
+        overhead_img = cv2.resize(self.visuals['overhead'], None, fx=1 / 3.0, fy=1 / 3.0)
+        titled_overlay(presentation_img, overhead_img, 'Overhead', (0, 0))
+        overhead_img = cv2.resize(self.visuals['windows_raw'], None, fx=1 / 3.0, fy=1 / 3.0)
+        titled_overlay(presentation_img, overhead_img, 'Raw Lane Detection', (presentation_img.shape[1] // 3, 0))
+        overhead_img = cv2.resize(self.visuals['windows_filtered'], None, fx=1 / 3.0, fy=1 / 3.0)
+        titled_overlay(presentation_img, overhead_img, 'Filtered Lane Detection',
+                       (presentation_img.shape[1] // 3 * 2, 0))
+
         # Show position
-        line_start = (10, 100)
+        x_text_start, y_text_start = (10, 350)
+        line_start = (10 + x_text_start, 40 + y_text_start)
         line_len = 300
-        cv2.putText(presentation_img, "Position", org=(0, 50), fontScale=2, thickness=3,
+        cv2.putText(presentation_img, "Position", org=(x_text_start, y_text_start), fontScale=2, thickness=3,
                     fontFace=cv2.FONT_HERSHEY_SIMPLEX, lineType=cv2.LINE_AA, color=(255, 255, 255))
         cv2.line(presentation_img, color=(255, 255, 255), thickness=2,
                  pt1=(line_start[0], line_start[1]),
@@ -436,20 +419,21 @@ class LaneFinder:
                     fontFace=cv2.FONT_HERSHEY_SIMPLEX, color=(255, 255, 255), lineType=cv2.LINE_AA)
 
         # Show radius of curvature
-        cv2.putText(presentation_img, "Curvature = {:>4.0f} m".format(curve_radius), org=(0, 200), fontScale=1,
-                    thickness=2,
-                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, color=(255, 255, 255), lineType=cv2.LINE_AA)
+        cv2.putText(presentation_img, "Curvature = {:>4.0f} m".format(curve_radius), fontScale=1, thickness=2,
+                    org=(x_text_start, 130 + y_text_start), fontFace=cv2.FONT_HERSHEY_SIMPLEX, color=(255, 255, 255),
+                    lineType=cv2.LINE_AA)
 
         return presentation_img
 
     def viz_windows(self, score_img, mode):
         """Displays the position of the windows over a score image."""
         if mode == 'filtered':
-            lw_img = window_image(self.windows_left, 'x_filtered', color=(0, 0, 255))
-            rw_img = window_image(self.windows_right, 'x_filtered', color=(0, 0, 255))
+            lw_img = window_image(self.windows_left, 'x_filtered', color=(0, 255, 0))
+            rw_img = window_image(self.windows_right, 'x_filtered', color=(0, 255, 0))
         elif mode == 'raw':
-            lw_img = window_image(self.windows_left, 'x_measured', color=(0, 255, 0))
-            rw_img = window_image(self.windows_right, 'x_measured', color=(0, 255, 0))
+            color = (255, 0, 0)
+            lw_img = window_image(self.windows_left, 'x_measured', color, color, color)
+            rw_img = window_image(self.windows_right, 'x_measured', color, color, color)
         else:
             raise Exception('mode is not valid')
         combined = lw_img + rw_img
@@ -486,6 +470,60 @@ class LaneFinder:
         Returns a callback function that takes an image, runs `self.find_lines()` and returns the requested visual.
         """
         return lambda img: self.viz_find_lines(img, visual=visual)
+
+
+def viz_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
+    """
+    Take an undistorted dashboard camera image and highlights the lane.
+
+    Code from Udacity SDC-ND Term 1 course code.
+
+    :param undist_img: An undistorted dashboard view image.
+    :param camera: The DashboardCamera object for the camera the image was taken on.
+    :param left_fit_x: the x values for the left line polynomial at the given y values.
+    :param right_fit_x: the x values for the right line polynomial at the given y values.
+    :param fit_y: the y values the left and right line x values were calculated at.
+    :return: The undistorted image with the lane overlaid on top of it.
+    """
+    # Create an undist_img to draw the lines on
+    lane_poly_overhead = np.zeros_like(undist_img).astype(np.uint8)
+
+    # Recast the x and y points into usable format for cv2.fillPoly()
+    pts_left = np.array([np.transpose(np.vstack([np.array(left_fit_x), fit_y]))])
+    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fit_x, fit_y])))])
+    pts = np.hstack((pts_left, pts_right))
+
+    # Draw the lane onto the warped blank undist_img
+    cv2.fillPoly(lane_poly_overhead, np.int_([pts]), (0, 255, 0))
+
+    # Warp back to original undist_img space
+    lane_poly_dash = camera.warp_to_dashboard(lane_poly_overhead)
+
+    # Combine the result with the original undist_img
+    return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
+
+
+def titled_overlay(image, overlay, title, org, border_thickness=2):
+    """Puts a title above the overlay image and places it in image at the given origin."""
+    # Place title
+    title_img = np.ones((50, overlay.shape[1], 3)).astype('uint8') * 255
+    cv2.putText(title_img, title, org=(10, 35), fontScale=1, thickness=2, color=(0, 0, 0),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, lineType=cv2.LINE_AA)
+
+    # Add title to overlay
+    overlay = np.concatenate((title_img, overlay), axis=0)
+
+    # Add border to overlay
+    overlay[:border_thickness, :, :] = 255
+    overlay[-border_thickness:, :, :] = 255
+    overlay[:, :border_thickness, :] = 255
+    overlay[:, -border_thickness:, :] = 255
+
+    # Place overlay onto image
+    x_offset, y_offset = org
+    image[y_offset:y_offset + overlay.shape[0], x_offset:x_offset + overlay.shape[1]] = overlay
+
+    # Add a white border
 
 
 if __name__ == '__main__':
