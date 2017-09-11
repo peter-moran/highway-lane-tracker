@@ -394,14 +394,14 @@ class LaneFinder:
 
 if __name__ == '__main__':
     # Calibrate using checkerboard
-    calibration_img_files = glob.glob('./camera_cal/*.jpg')
+    calibration_img_files = glob.glob('./data/camera_cal/*.jpg')
     lane_shape = [(584, 458), (701, 458), (295, 665), (1022, 665)]
     camera = DashboardCamera(calibration_img_files, chessboard_size=(9, 6), lane_shape=lane_shape)
 
     argc = len(sys.argv)
     if str(sys.argv[1]) == 'test':
         # Run pipeline on test images
-        test_imgs = glob.glob('./test_images/*.jpg')
+        test_imgs = glob.glob('./data/test_images/*.jpg')
         for img_file in test_imgs[:]:
             lane_finder = LaneFinder(camera)  # need new instance per image to prevent smoothing
             img = plt.imread(img_file)
@@ -414,7 +414,12 @@ if __name__ == '__main__':
         # Video options
         input_vid_file = str(sys.argv[1])
         visual = str(sys.argv[2]) if argc >= 3 else 'presentation'
-        output_vid_file = str(sys.argv[3]) if argc >= 4 else 'output_' + input_vid_file
+        if argc >= 4:
+            output_vid_file = str(sys.argv[3])
+        else:
+            name, ext = input_vid_file.split('/')[-1].split('.')
+            name += '_' + visual
+            output_vid_file = './output/' + name + '.' + ext
 
         # Create video
         lane_finder = LaneFinder(camera)
