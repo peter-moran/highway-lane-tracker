@@ -17,7 +17,7 @@ import symfit
 from imageio.core import NeedDownloadError
 
 from dynamic_subplot import DynamicSubplot
-from windows import Window, filter_window_list, window_image, sliding_window_update
+from windows import Window, filter_window_list, window_image, joint_sliding_window_update
 
 # Import moviepy and install ffmpeg if needed.
 try:
@@ -129,7 +129,7 @@ class DashboardCamera:
 
 
 class LaneFinder:
-    def __init__(self, cam: DashboardCamera, window_shape=(80, 61), search_margin=300, max_frozen_dur=15):
+    def __init__(self, cam: DashboardCamera, window_shape=(80, 61), search_margin=200, max_frozen_dur=15):
         """
         The primary interface for fitting lane lines. Used to initialize lane finding with desired settings and provides
         extensive options for visualization.
@@ -187,16 +187,15 @@ class LaneFinder:
         # Score pixels
         pixel_scores = self.score_pixels(img_overhead)
 
-        # Select windows_raw
-        sliding_window_update(self.windows_left, pixel_scores, margin=self.search_margin, mode='left')
-        sliding_window_update(self.windows_right, pixel_scores, margin=self.search_margin, mode='right')
+        # Select windows
+        joint_sliding_window_update(self.windows_left, self.windows_right, pixel_scores, margin=self.search_margin)
 
         # Filter window positions
-        win_left_valid, argvalid_l = filter_window_list(self.windows_left, include_frozen=True, include_dropped=False)
-        win_right_valid, argvalid_r = filter_window_list(self.windows_right, include_frozen=True, include_dropped=False)
+        win_left_valid, argvalid_l = filter_window_list(self.windows_left, remove_frozen=False, remove_dropped=True)
+        win_right_valid, argvalid_r = filter_window_list(self.windows_right, remove_frozen=False, remove_dropped=True)
 
         assert len(win_left_valid) >= 3 and len(win_right_valid) >= 3, 'Not enough valid windows to create a fit.'
-        # TODO: Do something if not enough windows to fit
+        # TODO: Do something if not enough windows to fit. Most likely fall back on old measurements.
 
         # Apply fit
         fit_vals = self.fit_lanes(zip(*[window.pos_xy() for window in win_left_valid]),
@@ -395,7 +394,7 @@ class LaneFinder:
 
         # Show overlays
         overhead_img = cv2.resize(self.visuals['overhead'], None, fx=1 / 3.0, fy=1 / 3.0)
-        titled_overlay(presentation_img, overhead_img, 'Overhead', (0, 0))
+        titled_overlay(presentation_img, overhead_img, 'Overhead (not to scale)', (0, 0))
         overhead_img = cv2.resize(self.visuals['windows_raw'], None, fx=1 / 3.0, fy=1 / 3.0)
         titled_overlay(presentation_img, overhead_img, 'Raw Lane Detection', (presentation_img.shape[1] // 3, 0))
         overhead_img = cv2.resize(self.visuals['windows_filtered'], None, fx=1 / 3.0, fy=1 / 3.0)
@@ -432,8 +431,10 @@ class LaneFinder:
             rw_img = window_image(self.windows_right, 'x_filtered', color=(0, 255, 0))
         elif mode == 'raw':
             color = (255, 0, 0)
-            lw_img = window_image(self.windows_left, 'x_measured', color, color, color)
-            rw_img = window_image(self.windows_right, 'x_measured', color, color, color)
+            win_left_detected, arg = filter_window_list(self.windows_left, False, False, remove_undetected=True)
+            win_right_detected, arg = filter_window_list(self.windows_right, False, False, remove_undetected=True)
+            lw_img = window_image(win_left_detected, 'x_measured', color, color, color)
+            rw_img = window_image(win_right_detected, 'x_measured', color, color, color)
         else:
             raise Exception('mode is not valid')
         combined = lw_img + rw_img

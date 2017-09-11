@@ -40,6 +40,7 @@ class Window:
         self.x_measured = None
         self.dropped = True
         self.frozen = False
+        self.detected = False
         self.frozen_dur = 0
         self.max_frozen_dur = max_frozen_dur
 
@@ -111,6 +112,7 @@ class Window:
         column_scores = gaussian_filter(np.sum(search_region, axis=0), sigma=self.width / 3, truncate=3.0)
 
         if max(column_scores) != 0:
+            self.detected = True
             # Update measurement
             self.x_measured = np.argmax(column_scores) + x_offset
             window_magnitude = \
@@ -130,6 +132,7 @@ class Window:
 
         else:
             # No signal in search region
+            self.detected = False
             self.freeze()
 
     def get_mask(self, param='x_filtered'):
@@ -156,7 +159,8 @@ class Window:
 
 def sliding_window_update(windows: List[Window], score_img, margin, mode):
     """
-    Updates each window in a list, constraining their search regions to  a marginal distance of the last valid window.
+    Updates each window in a list, constraining their search regions to a marginal distance of the last valid window.
+    Generally improved upon in `joint_sliding_window_update()`, which is typically recommended instead.
 
     Each window's search region will be centered on the last undropped window position and extend a margin to the
     left and right.
@@ -164,12 +168,64 @@ def sliding_window_update(windows: List[Window], score_img, margin, mode):
     :param windows: A list of Window objects.
     :param score_img: A score image, where pixel intensity represents where the lane most likely is.
     :param margin: The maximum x distance the next window can be placed from the last undropped window.
-    :param mode: `left` or `right` for the lane the Windows are tracking.
+    :param mode: 'left' or 'right' for the lane the Windows are tracking.
     """
+    search_center = start_sliding_search(windows, score_img, mode)
+
+    # Update each window, searching nearby the last undropped window.
+    for window in windows[1:]:
+        x_search_range = (search_center - margin, search_center + margin)
+        window.update(score_img, x_search_range)
+
+        if not window.dropped:
+            search_center = window.x_filtered
+
+
+def joint_sliding_window_update(windows_left: List[Window], windows_right: List[Window], score_img, margin):
+    """
+    Updates window from both lists, preventing window crossover and constraining their search regions to a margin.
+
+    This improves on `sliding_window_update()` by preventing windows from different lanes from crossing over each other
+    or detecting the same part of the image.
+
+    Each window's search region will be centered on the last undropped window position and extend a margin to the
+    left and right. In cases where the margins of the left and right lane may overlap, they are truncated to the
+    halfway point between.
+
+    :param windows_left: A list of Window objects for the left lane.
+    :param windows_right: A list of Window objects for the right lane.
+    :param score_img: A score image, where pixel intensity represents where the lane most likely is.
+    :param margin: The maximum x distance the next window can be placed from the last undropped window.
+    """
+    assert len(windows_left) == len(windows_right), "Window lists should be same length. Did you filter already?"
+
+    search_centers = [start_sliding_search(windows_left, score_img, 'left'),
+                      start_sliding_search(windows_right, score_img, 'right')]
+
+    # Update each window, searching nearby the last undropped window.
+    for i in range(len(windows_left)):
+        # Find search range for the left and right
+        x_search_ranges = [None, None]
+        for j in [0, 1]:
+            x_search_ranges[j] = [search_centers[j] - margin, search_centers[j] + margin]
+
+        # Fix any crossover
+        if x_search_ranges[0][1] > x_search_ranges[1][0]:
+            average = (x_search_ranges[0][1] + x_search_ranges[1][0]) // 2
+            x_search_ranges[0][1] = average
+            x_search_ranges[1][0] = average
+
+        # Perform update
+        for j, window in enumerate([windows_left[i], windows_right[i]]):
+            window.update(score_img, x_search_ranges[j])
+            if not window.dropped:
+                search_centers[j] = window.x_filtered
+
+
+def start_sliding_search(windows, score_img, mode):
     assert mode == 'left' or mode == 'right', "Mode not valid."
     assert strictly_decreasing([w.y for w in windows]), "Windows not ordered properly. Should start at image bottom"
     img_h, img_w = score_img.shape[0:2]
-
     # Update the bottom window
     if mode == 'left':
         windows[0].update(score_img, (0, img_w // 2))
@@ -185,18 +241,13 @@ def sliding_window_update(windows: List[Window], score_img, margin, mode):
             search_center = argmax_between(column_scores, 0, img_w // 2)
         elif mode == 'right':
             search_center = argmax_between(column_scores, img_w // 2, img_w)
-        assert 'search_center' in locals(), 'No lane was found to start with.'  # TODO: Do something if no lane is found
+        assert 'search_center' in locals(), 'No lane was found to start with.'
+        # TODO: Do something if still no lane is found
     else:
         # Reuse the position of the bottom window
         search_center = windows[0].x_filtered
 
-    # Update each window, searching nearby the last undropped window.
-    for window in windows[1:]:
-        x_search_range = (search_center - margin, search_center + margin)
-        window.update(score_img, x_search_range)
-
-        if not window.dropped:
-            search_center = window.x_filtered
+    return search_center
 
 
 def strictly_decreasing(L):
@@ -214,13 +265,14 @@ def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
     return max_ndx
 
 
-def filter_window_list(windows: List[Window], include_frozen=True, include_dropped=False):
+def filter_window_list(windows: List[Window], remove_frozen=False, remove_dropped=True, remove_undetected=False):
     """
     Given a list of Windows, returns a new list with frozen and dropped windows optionally removed.
 
     :param windows: A list of Window objects.
-    :param include_frozen: Set False to not return any frozen windows.
-    :param include_dropped: Set False to not return any dropped windows.
+    :param remove_frozen: Set True to prevent returning all frozen windows.
+    :param remove_dropped: Set True to prevent returning all dropped windows.
+    :param remove_undetected: Set True to prevent returning all undetected windows.
     :return: (windows_filtered, args)
              windows_filtered: The new list of Windows after filters are applied.
              args: The index in `windows` that each window in `windows_filtered` originated from.
@@ -228,13 +280,14 @@ def filter_window_list(windows: List[Window], include_frozen=True, include_dropp
     windows_filtered = []
     args = []
     for i, window in enumerate(windows):
-        if window.dropped and not include_dropped:
+        if window.dropped and remove_dropped:
             continue
-        elif window.frozen and not include_frozen:
+        if window.frozen and remove_frozen:
             continue
-        else:
-            windows_filtered.append(window)
-            args.append(i)
+        if not window.detected and remove_undetected:
+            continue
+        windows_filtered.append(window)
+        args.append(i)
     return windows_filtered, args
 
 
