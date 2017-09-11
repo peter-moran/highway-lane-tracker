@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """
-Finds lane lines and their curvature from camera input_video.
+Finds and highlights lane lines in dashboard camera videos.
+See README.md for more info.
 
 Author: Peter Moran
 Created: 8/1/2017
@@ -19,7 +20,6 @@ from dynamic_subplot import DynamicSubplot
 from windows import Window, filter_window_list, window_image, sliding_window_update
 
 # Import moviepy and install ffmpeg if needed.
-REGULATION_LANE_WIDTH = 3.7
 try:
     from moviepy.editor import VideoFileClip
 except NeedDownloadError as download_err:
@@ -36,15 +36,19 @@ except NeedDownloadError as download_err:
         # Unknown download error
         raise download_err
 
+REGULATION_LANE_WIDTH = 3.7
 
 class DashboardCamera:
     def __init__(self, chessboard_img_fnames, chessboard_size, lane_shape, scale_correction=(30 / 720, 3.7 / 700)):
         """
-        Class for dashboard camera calibration, perspective warping, and mainlining various properties.
-        :param chessboard_img_fnames: List of files name locations for the calibration images.
+        Handles camera calibration, distortion correction, perspective warping, and maintains various camera properties.
+
+        :param chessboard_img_fnames: List of file names of the chessboard calibration images.
         :param chessboard_size: Size of the calibration chessboard.
-        :param lane_shape: Pixel points for the trapezoidal profile of the lane (on straight road), clockwise starting
-                           from the top left.
+        :param lane_shape: Pixel locations of the four corners describing the profile of the lane lines on a straight
+        road. Should be ordered clockwise, from the top left.
+        :param scale_correction: Constants y_m_per_pix and x_m_per_pix describing the number of meters per pixel in the
+        overhead transformation of the road.
         """
         # Get image size
         example_img = cv2.imread(chessboard_img_fnames[0])
@@ -54,8 +58,6 @@ class DashboardCamera:
 
         # Calibrate
         self.camera_matrix, self.distortion_coeffs = self.calibrate(chessboard_img_fnames, chessboard_size)
-        self.y_m_per_pix = scale_correction[0]
-        self.x_m_per_pix = scale_correction[1]
 
         # Define overhead transform and its inverse
         top_left, top_right, bottom_left, bottom_right = lane_shape
@@ -64,10 +66,13 @@ class DashboardCamera:
                                   (bottom_right[0], self.img_height - 1), (bottom_left[0], self.img_height - 1)])
         self.overhead_transform = cv2.getPerspectiveTransform(source, destination)
         self.inverse_overhead_transform = cv2.getPerspectiveTransform(destination, source)
+        self.y_m_per_pix = scale_correction[0]
+        self.x_m_per_pix = scale_correction[1]
 
     def calibrate(self, chessboard_img_files, chessboard_size):
         """
         Calibrates the camera using chessboard calibration images.
+
         :param chessboard_img_files: List of files name locations for the calibration images.
         :param chessboard_size: Size of the calibration chessboard.
         :return: Two lists: objpoints, imgpoints
@@ -106,28 +111,68 @@ class DashboardCamera:
         """
         return cv2.undistort(image, self.camera_matrix, self.distortion_coeffs, None, self.camera_matrix)
 
-    def warp_to_overhead(self, dashboard_image):
+    def warp_to_overhead(self, undistorted_img):
         """
         Transforms this camera's images from the dashboard perspective to an overhead perspective.
-        :param dashboard_image: an image taken from the dashboard of the car. Aka a raw image.
-        """
-        return cv2.warpPerspective(dashboard_image, self.overhead_transform, dsize=(self.img_width, self.img_height))
 
-    def warp_to_dashboard(self, dashboard_image):
+        Note: Make sure to undistort first.
         """
-        Transforms this camera's images from the dashboard perspective to an overhead perspective.
-        :param dashboard_image: an image taken from the dashboard of the car. Aka a raw image.
+        return cv2.warpPerspective(undistorted_img, self.overhead_transform, dsize=(self.img_width, self.img_height))
+
+    def warp_to_dashboard(self, overhead_img):
         """
-        return cv2.warpPerspective(dashboard_image, self.inverse_overhead_transform,
+        Transforms this camera's images from an overhead perspective back to the dashboard perspective.
+        """
+        return cv2.warpPerspective(overhead_img, self.inverse_overhead_transform,
                                    dsize=(self.img_width, self.img_height))
 
 
+def viz_lane(undist_img, camera, left_fit_x, right_fit_x, fit_y):
+    """
+    Take an undistorted dashboard camera image and highlights the lane.
+
+    Code from Udacity SDC-ND Term 1 course code.
+
+    :param undist_img: An undistorted dashboard view image.
+    :param camera: The DashboardCamera object for the camera the image was taken on.
+    :param left_fit_x: the x values for the left line polynomial at the given y values.
+    :param right_fit_x: the x values for the right line polynomial at the given y values.
+    :param fit_y: the y values the left and right line x values were calculated at.
+    :return: The undistorted image with the lane overlaid on top of it.
+    """
+    # Create an undist_img to draw the lines on
+    lane_poly_overhead = np.zeros_like(undist_img).astype(np.uint8)
+
+    # Recast the x and y points into usable format for cv2.fillPoly()
+    pts_left = np.array([np.transpose(np.vstack([np.array(left_fit_x), fit_y]))])
+    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fit_x, fit_y])))])
+    pts = np.hstack((pts_left, pts_right))
+
+    # Draw the lane onto the warped blank undist_img
+    cv2.fillPoly(lane_poly_overhead, np.int_([pts]), (0, 255, 0))
+
+    # Warp back to original undist_img space
+    lane_poly_dash = camera.warp_to_dashboard(lane_poly_overhead)
+
+    # Combine the result with the original undist_img
+    return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
+
+
 class LaneFinder:
-    def __init__(self, cam: DashboardCamera, window_shape=(80, 61), search_width=300, max_frozen_dur=15):
+    def __init__(self, cam: DashboardCamera, window_shape=(80, 61), search_margin=300, max_frozen_dur=15):
+        """
+        The primary interface for fitting lane lines. Used to initialize lane finding with desired settings and provides
+        extensive options for visualization.
+
+        :param cam: A calibrated camera.
+        :param window_shape: Desired (window height, window width) that the sliding window search will use.
+        :param search_margin: The maximum pixels of movement allowed between each level of windows.
+        :param max_frozen_dur: The maximum amount of frames a window can continue to be used when frozen (eg when not
+        found or when measurements are uncertain).
+        """
         self.camera = cam
 
         # Create windows
-        self.search_margin = search_width / 2
         self.windows_left = []
         self.windows_right = []
         for level in range(cam.img_height // window_shape[0]):
@@ -135,27 +180,32 @@ class LaneFinder:
             x_init_r = cam.img_width / 4 * 3
             self.windows_left.append(Window(level, window_shape, cam.img_size, x_init_l, max_frozen_dur))
             self.windows_right.append(Window(level, window_shape, cam.img_size, x_init_r, max_frozen_dur))
+        self.search_margin = search_margin
 
-        # State
-        self.last_fit_vals = None
-        self.last_masked_pixel_scores = [np.zeros(cam.img_size), np.zeros(cam.img_size)]
-        for i in range(cam.img_height):
-            self.last_masked_pixel_scores[0][i, cam.img_width // 4] = 1
-            self.last_masked_pixel_scores[1][i, (cam.img_width // 4) * 3] = 1
-
-        # Initialize visuals to empty images
-        VIZ_OPTIONS = ('dash_undistorted', 'overhead', 'saturation', 'saturation_binary', 'lightness',
-                       'lightness_binary', 'pixel_scores', 'windows_raw', 'highlighted_lane')
-        self.visuals = {name: None for name in VIZ_OPTIONS}
-        self.__viz_options = None
+        # Initialize visuals
+        VIZ_OPTIONS = ('dash_undistorted', 'overhead', 'lab_b', 'lab_b_binary', 'lightness', 'lightness_binary',
+                       'value', 'value_binary', 'pixel_scores', 'windows_raw', 'highlighted_lane', 'presentation')
+        self.visuals = {name: None for name in VIZ_OPTIONS}  # Storage location of visualization images
+        self.__viz_desired = None  # The visuals we want to save
         self.__viz_dependencies = {'windows_raw': ['pixel_scores'], 'windows_filtered': ['pixel_scores'],
-                                   'presentation': ['highlighted_lane']}
+                                   'presentation': ['highlighted_lane']}  # Dependencies of visuals on other visuals
 
     def find_lines(self, img_dashboard, visuals=None):
+        """
+        Primary function for fitting lane lines in an image.
+
+        Visualization options include:
+        'dash_undistorted', 'overhead', 'lab_b', 'lab_b_binary', 'lightness', 'lightness_binary', 'value',
+        'value_binary', 'pixel_scores', 'windows_raw', 'highlighted_lane', 'presentation'
+
+        :param img_dashboard: Raw dashboard camera image taken by the calibrated `self.camera`.
+        :param visuals: A list of visuals you would like to be saved to `self.visuals`.
+        :return: A set of points along the left and right lane line: y_fit, x_fit_left, x_fit_right.
+        """
         # Account for visualization options
         if visuals is None:
             visuals = ['highlighted_lane']
-        self.__viz_options = self.fix_viz_dependencies(visuals)
+        self.__viz_desired = self.fix_viz_dependencies(visuals)
 
         # Undistort and transform to overhead view
         img_dash_undistorted = self.camera.undistort(img_dashboard)
@@ -168,11 +218,14 @@ class LaneFinder:
         sliding_window_update(self.windows_left, pixel_scores, margin=self.search_margin, mode='left')
         sliding_window_update(self.windows_right, pixel_scores, margin=self.search_margin, mode='right')
 
-        # TODO: Do something if not enough windows to fit
-
         # Filter window positions
         win_left_valid, argvalid_l = filter_window_list(self.windows_left, include_frozen=True, include_dropped=False)
         win_right_valid, argvalid_r = filter_window_list(self.windows_right, include_frozen=True, include_dropped=False)
+
+        assert len(win_left_valid) >= 3 and len(win_right_valid) >= 3, 'Not enough valid windows to create a fit.'
+        # TODO: Do something if not enough windows to fit
+
+        # Apply fit
         fit_vals = self.fit_lanes(zip(*[window.pos_xy() for window in win_left_valid]),
                                   zip(*[window.pos_xy() for window in win_right_valid]))
 
@@ -185,11 +238,12 @@ class LaneFinder:
         x_fit_right = fit_vals['ar'] * y_fit ** 2 + fit_vals['br'] * y_fit + fit_vals['x0r']
 
         # Calculate radius of curvature
-        curve_rad = self.calc_curvature(win_left_valid)
+        curve_radius = self.calc_curvature(win_left_valid)
 
         # Calculate position in lane.
         img_center = camera.img_width / 2
-        position_prcnt = np.interp(img_center, [x_fit_left[-1], x_fit_right[-1]], [0, 1])
+        lane_position_prcnt = np.interp(img_center, [x_fit_left[-1], x_fit_right[-1]], [0, 1])
+        lane_position = lane_position_prcnt * REGULATION_LANE_WIDTH
 
         # Log visuals
         self.save_visual('dash_undistorted', img_dash_undistorted)
@@ -201,27 +255,41 @@ class LaneFinder:
         self.save_visual('windows_filtered', self.visuals['pixel_scores'],
                          img_proc_func=lambda img: self.viz_windows(img, 'filtered'))
         self.save_visual('highlighted_lane', img_dash_undistorted,
-                         img_proc_func=lambda img: self.viz_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
+                         img_proc_func=lambda img: viz_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
         self.save_visual('presentation', self.visuals['highlighted_lane'],
-                         img_proc_func=lambda img: self.viz_presentation(img, position_prcnt, curve_rad))
+                         img_proc_func=lambda img: self.viz_presentation(img, lane_position, curve_radius))
 
         return y_fit, x_fit_left, x_fit_right
 
     def score_pixels(self, img) -> np.ndarray:
+        """
+        Takes a road image and returns an image where pixel intensity maps to likelihood of it being part of the lane.
+
+        Each pixel gets its own score, stored as pixel intensity. An intensity of zero means it is not from the lane,
+        and a higher score means higher confidence of being from the lane.
+
+        :param img: an image of a road, typically from an overhead perspective.
+        :return: The score image.
+        """
+        # Settings to run thresholding operations on
         settings = [{'name': 'lab_b', 'cspace': 'LAB', 'channel': 2, 'clipLimit': 2.0, 'threshold': 150},
                     {'name': 'value', 'cspace': 'HSV', 'channel': 2, 'clipLimit': 6.0, 'threshold': 220},
                     {'name': 'lightness', 'cspace': 'HLS', 'channel': 1, 'clipLimit': 2.0, 'threshold': 210}]
 
+        # Perform binary thresholding according to each setting and combine them into one image.
         scores = np.zeros(img.shape[0:2])
         for params in settings:
             # Change color space
             color_t = getattr(cv2, 'COLOR_RGB2{}'.format(params['cspace']))
             gray = cv2.cvtColor(img, color_t)[:, :, params['channel']]
 
-            # Threshold to binary
+            # Normalize regions of the image using CLAHE
             clahe = cv2.createCLAHE(params['clipLimit'], tileGridSize=(8, 8))
             norm_img = clahe.apply(gray)
+
+            # Threshold to binary
             ret, binary = cv2.threshold(norm_img, params['threshold'], 255, cv2.THRESH_BINARY)
+
             scores += binary
 
             # Save images
@@ -230,10 +298,24 @@ class LaneFinder:
 
         return scores.astype('uint8')
 
-    def fit_lanes(self, points_left, points_right, fit_globally=False):
+    def fit_lanes(self, points_left, points_right, fit_globally=False) -> dict:
+        """
+        Applies and returns a polynomial fit for given points along the left and right lane line.
+
+        Both lanes are described by a second order polynomial x(y) = ay^2 + by + x0. In the `fit_globally` case,
+        a and b are modeled as equal, making the lines perfectly parallel. Otherwise, each line is fit independent of
+        the other. The parameters of the model are returned in a dictionary with keys 'al', 'bl', 'x0l' for the left
+        lane parameters and 'ar', 'br', 'x0r' for the right lane.
+
+        :param points_left: Two lists of the x and y positions along the left lane line.
+        :param points_right: Two lists of the x and y positions along the right lane line.
+        :param fit_globally: Set True to use the global, parallel line fit model. In practice this does not allays work.
+        :return: fit_vals, a dictionary containing the fitting parameters for the left and right lane as above.
+        """
         xl, yl = points_left
         xr, yr = points_right
 
+        fit_vals = {}
         if fit_globally:
             # Define global model to fit
             x_left, y_left, x_right, y_right = symfit.variables('x_left, y_left, x_right, y_right')
@@ -249,10 +331,11 @@ class LaneFinder:
             xr, yr = points_right
             fit = symfit.Fit(model, x_left=xl, y_left=yl, x_right=xr, y_right=yr)
             fit = fit.execute()
-            fit_vals = {'ar': fit.value(a), 'al': fit.value(a), 'bl': fit.value(b), 'br': fit.value(b),
-                        'x0l': fit.value(x0_left), 'x0r': fit.value(x0_right)}
+            fit_vals.update({'ar': fit.value(a), 'al': fit.value(a), 'bl': fit.value(b), 'br': fit.value(b),
+                             'x0l': fit.value(x0_left), 'x0r': fit.value(x0_right)})
 
         else:
+            # Fit lines independently
             x, y = symfit.variables('x, y')
             a, b, x0 = symfit.parameters('a, b, x0')
 
@@ -263,7 +346,7 @@ class LaneFinder:
             # Apply fit on left
             fit = symfit.Fit(model, x=xl, y=yl)
             fit = fit.execute()
-            fit_vals = {'al': fit.value(a), 'bl': fit.value(b), 'x0l': fit.value(x0)}
+            fit_vals.update({'al': fit.value(a), 'bl': fit.value(b), 'x0l': fit.value(x0)})
 
             # Apply fit on right
             fit = symfit.Fit(model, x=xr, y=yr)
@@ -273,7 +356,15 @@ class LaneFinder:
         return fit_vals
 
     def calc_curvature(self, windows: List[Window]):
-        """From Udacity"""
+        """
+        Given a list of Windows along a lane, returns an estimated radius of curvature of the lane.
+
+        Radius of curvature is found by transforming the x,y positions of the windows to the world space, applying
+        a simple polynomial fit, and then using the fit values to find curvature.
+
+        :param windows: A List of Windows along a single lane.
+        :return: Radius of curvature, in meters.
+        """
         x, y = zip(*[window.pos_xy() for window in windows])
         x = np.array(x)
         y = np.array(y)
@@ -282,54 +373,52 @@ class LaneFinder:
         return ((1 + (2 * fit_cr[0] * y_eval * camera.y_m_per_pix + fit_cr[1]) ** 2) ** 1.5) / np.absolute(
             2 * fit_cr[0])
 
-    def save_visual(self, name, img, img_proc_func=None):
-        if 'all' not in self.__viz_options and name not in self.__viz_options:
+    def save_visual(self, name, image, img_proc_func=None):
+        """
+        Conditionally processes and saves the given image if this LaneFinder has been set to save it.
+
+        Specifically: If `name` has been set to be visualized (ie is in `self.__viz_desired`), process the `image`
+        with the `img_proc_func` and save it to `self.visuals`.
+
+        :param name: Name of the visual. Should match a key from `self.visuals`.
+        :param image: The image to process and save.
+        :param img_proc_func: A single parameter function, which `image` will be passed to if it is to be saved.
+        """
+        if 'all' not in self.__viz_desired and name not in self.__viz_desired:
             return  # Don't save this image
         if img_proc_func is not None:
-            img = img_proc_func(img)
-        if len(img.shape) == 2 or img.shape[2] == 1:
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-        if len(img.shape) != 3 or img.shape[2] != 3:
+            image = img_proc_func(image)
+        if len(image.shape) == 2 or image.shape[2] == 1:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        if len(image.shape) != 3 or image.shape[2] != 3:
             raise Exception('Image is not 3 channels or could not be converted to 3 channels. Cannot use.')
-        self.visuals[name] = img
+        self.visuals[name] = image
 
-    def fix_viz_dependencies(self, viz_options: list):
+    def fix_viz_dependencies(self, viz_names: list):
+        """
+        Ensures that any dependencies of the visuals in `viz_names` are also saved.
+
+        Each name in `viz_names` should match a key from `self.visuals`. Dependencies are defined in
+        `self.__viz_dependencies`.
+        """
         for viz_opt in self.__viz_dependencies:
-            if viz_opt in viz_options:
+            if viz_opt in viz_names:
                 for dependency in self.__viz_dependencies[viz_opt]:
-                    viz_options.append(dependency)
-        return viz_options
+                    viz_names.append(dependency)
+        return viz_names
 
-    def viz_lane(self, undist_img, camera, left_fit_x, right_fit_x, fit_y):
+    def viz_presentation(self, lane_img, lane_position, curve_radius, lane_width=REGULATION_LANE_WIDTH):
         """
-        Take an undistorted dashboard camera image and highlights the lane.
-        :param undist_img: An undistorted dashboard view image.
-        :param camera: The DashboardCamera object for the camera the image was taken on.
-        :param left_fit_x: the x values for the left line polynomial at the given y values.
-        :param right_fit_x: the x values for the right line polynomial at the given y values.
-        :param fit_y: the y values the left and right line x values were calculated at.
-        :return: The undistorted image with the lane overlaid on top of it.
+        Processes the image for presentation purposes, with extra information displayed over the lane image.
+
+        :param lane_img: Image with the lane highlighted.
+        :param lane_position: The position of the car relative to the left lane, in meters.
+        :param curve_radius: The radius of curvature of the lane, in meters.
+        :param lane_width: The width of the lane, in meters.
+        :return: The presentation_img visual.
         """
-        # Create an undist_img to draw the lines on
-        lane_poly_overhead = np.zeros_like(undist_img).astype(np.uint8)
-
-        # Recast the x and y points into usable format for cv2.fillPoly()
-        pts_left = np.array([np.transpose(np.vstack([np.array(left_fit_x), fit_y]))])
-        pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fit_x, fit_y])))])
-        pts = np.hstack((pts_left, pts_right))
-
-        # Draw the lane onto the warped blank undist_img
-        cv2.fillPoly(lane_poly_overhead, np.int_([pts]), (0, 255, 0))
-
-        # Warp back to original undist_img space
-        lane_poly_dash = camera.warp_to_dashboard(lane_poly_overhead)
-
-        # Combine the result with the original undist_img
-        return cv2.addWeighted(undist_img, 1, lane_poly_dash, 0.3, 0)
-
-    def viz_presentation(self, lane_img, position_prcnt, curve_rad):
         presentation_img = np.copy(lane_img)
-        world_position = position_prcnt * REGULATION_LANE_WIDTH
+        lane_position_prcnt = lane_position / lane_width
 
         # Show position
         line_start = (10, 100)
@@ -339,20 +428,22 @@ class LaneFinder:
         cv2.line(presentation_img, color=(255, 255, 255), thickness=2,
                  pt1=(line_start[0], line_start[1]),
                  pt2=(line_start[0] + line_len, line_start[1]))
-        cv2.circle(presentation_img, center=(line_start[0] + int(position_prcnt * line_len), line_start[1]), radius=8,
+        cv2.circle(presentation_img, center=(line_start[0] + int(lane_position_prcnt * line_len), line_start[1]),
+                   radius=8,
                    color=(255, 255, 255))
-        cv2.putText(presentation_img, '{:.2f} m'.format(world_position), fontScale=1, thickness=1,
-                    org=(line_start[0] + int(position_prcnt * line_len) + 5, line_start[1] + 35),
+        cv2.putText(presentation_img, '{:.2f} m'.format(lane_position), fontScale=1, thickness=1,
+                    org=(line_start[0] + int(lane_position_prcnt * line_len) + 5, line_start[1] + 35),
                     fontFace=cv2.FONT_HERSHEY_SIMPLEX, color=(255, 255, 255), lineType=cv2.LINE_AA)
 
         # Show radius of curvature
-        cv2.putText(presentation_img, "Curvature = {:>4.0f} m".format(curve_rad), org=(0, 200), fontScale=1,
+        cv2.putText(presentation_img, "Curvature = {:>4.0f} m".format(curve_radius), org=(0, 200), fontScale=1,
                     thickness=2,
                     fontFace=cv2.FONT_HERSHEY_SIMPLEX, color=(255, 255, 255), lineType=cv2.LINE_AA)
 
         return presentation_img
 
-    def viz_windows(self, img, mode):
+    def viz_windows(self, score_img, mode):
+        """Displays the position of the windows over a score image."""
         if mode == 'filtered':
             lw_img = window_image(self.windows_left, 'x_filtered', color=(0, 0, 255))
             rw_img = window_image(self.windows_right, 'x_filtered', color=(0, 0, 255))
@@ -362,9 +453,10 @@ class LaneFinder:
         else:
             raise Exception('mode is not valid')
         combined = lw_img + rw_img
-        return cv2.addWeighted(img, 1, combined, 0.5, 0)
+        return cv2.addWeighted(score_img, 1, combined, 0.5, 0)
 
     def viz_pipeline(self, img):
+        """Displays most of the steps in the image processing pipeline for a single image."""
         y_fit, x_fit_left, x_fit_right = self.find_lines(img, ['all'])
         dynamic_subplot = DynamicSubplot(3, 4)
         dynamic_subplot.imshow(self.visuals['dash_undistorted'], "Undistorted Road")
@@ -385,20 +477,25 @@ class LaneFinder:
         dynamic_subplot.imshow(self.visuals['highlighted_lane'], "Highlighted Lane")
 
     def viz_find_lines(self, img, visual='presentation'):
+        """Runs `self.find_lines()` for a single visual, and returns it."""
         self.find_lines(img, [visual])
         return self.visuals[visual]
 
     def viz_callback(self, visual='presentation'):
+        """
+        Returns a callback function that takes an image, runs `self.find_lines()` and returns the requested visual.
+        """
         return lambda img: self.viz_find_lines(img, visual=visual)
 
 
 if __name__ == '__main__':
+    argc = len(sys.argv)
+
     # Calibrate using checkerboard
     calibration_img_files = glob.glob('./data/camera_cal/*.jpg')
     lane_shape = [(584, 458), (701, 458), (295, 665), (1022, 665)]
     camera = DashboardCamera(calibration_img_files, chessboard_size=(9, 6), lane_shape=lane_shape)
 
-    argc = len(sys.argv)
     if str(sys.argv[1]) == 'test':
         # Run pipeline on test images
         test_imgs = glob.glob('./data/test_images/*.jpg')

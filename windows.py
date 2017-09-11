@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 from filterpy.common import Q_discrete_white_noise
@@ -8,6 +8,16 @@ from scipy.ndimage.filters import gaussian_filter
 
 class Window:
     def __init__(self, level, window_shape, img_shape, x_init, max_frozen_dur):
+        """
+        Tracks a window as used for selecting lane lines in an image.
+
+        :param level: Level of the window, as counted from the bottom of the image up.
+        :param window_shape: (height, width) of the window in pixels.
+        :param img_shape: (height, width) of the image the window resides in.
+        :param x_init: Initial x position of the window.
+        :param max_frozen_dur: The maximum amount of frames a window can continue to be used when frozen (eg when not
+        found or when measurements are uncertain).
+        """
         if window_shape[1] % 2 == 0:
             raise Exception("width must be odd")
         # Image info
@@ -34,41 +44,70 @@ class Window:
         self.max_frozen_dur = max_frozen_dur
 
     def x_begin(self, param='x_filtered'):
+        """
+        The leftmost position of the window, relative to the last filtered position or measurement.
+
+        :param param: Whether to use the 'x_filtered' or 'x_measured' position.
+        """
+        self.check_x_param(param)
         x = getattr(self, param)
         return int(max(0, x - self.width // 2))
 
     def x_end(self, param='x_filtered'):
+        """
+        One past the rightmost position of the window, relative to the last filtered position or measurement.
+
+        :param param: Whether to use the 'x_filtered' or 'x_measured' position.
+        """
+        self.check_x_param(param)
         x = getattr(self, param)
         return int(min(x + self.width // 2, self.img_w))
 
     def area(self):
+        """Area of the window."""
         return self.height * self.width
 
     def freeze(self):
+        """Marks the window as frozen, drops it if it's been frozen for too long, and increases filter uncertainty."""
         self.frozen = True
         if self.frozen_dur > self.max_frozen_dur:
             self.drop()
         self.frozen_dur += 1
-        self.filter.grow_uncertainty(5)
+        self.filter.grow_uncertainty(1)
 
     def unfreeze(self):
+        """Marks the window as not frozen and not dropped, resets frozen counter."""
         self.frozen_dur = 0
         self.dropped = False
         self.frozen = False
 
     def drop(self):
+        """Marks the window as dropped and increases filter uncertainty."""
         self.dropped = True
         # Quickly grow uncertainty
-        self.filter.grow_uncertainty(50)
+        self.filter.grow_uncertainty(1)
 
-    def update(self, image, x_search_range):
-        assert image.shape[0] == self.img_h and \
-               image.shape[1] == self.img_w, 'Window not parametrized for this image size'
+    def update(self, score_img, x_search_range, min_log_likelihood=-40):
+        """
+        Given a score image and the x search bounds, updates the window position to the likely position of the lane.
+
+        If the measurement is deemed suspect for some reason, the update will be rejected and the window will be
+        'frozen', causing it to stay in place. If the window is frozen beyond its  `max_frozen_dur` then it will be
+        dropped entirely until a non-suspect measurement is made.
+
+        The window only searches within its y range defined at initialization.
+
+        :param score_img: A score image, where pixel intensity represents where the lane most likely is.
+        :param x_search_range: The (x_begin, x_end) range the window should search between in the score image.
+        :param min_log_likelihood: The minimum log likelihood allowed for a measurement before it is rejected.
+        """
+        assert score_img.shape[0] == self.img_h and \
+               score_img.shape[1] == self.img_w, 'Window not parametrized for this score_img size'
 
         # Apply a column-wise gaussian filter to score the x-positions in this window's search region
         x_search_range = (max(0, int(x_search_range[0])), min(int(x_search_range[1]), self.img_w))
         x_offset = x_search_range[0]
-        search_region = image[self.y_begin: self.y_end, x_offset: x_search_range[1]]
+        search_region = score_img[self.y_begin: self.y_end, x_offset: x_search_range[1]]
         column_scores = gaussian_filter(np.sum(search_region, axis=0), sigma=self.width / 3, truncate=3.0)
 
         if max(column_scores) != 0:
@@ -81,8 +120,8 @@ class Window:
                 window_magnitude / (window_magnitude + noise_magnitude) if window_magnitude is not 0 else 0
 
             # Filter measurement and set position
-            if signal_noise_ratio < 0.6 or self.filter.loglikelihood(self.x_measured) < -40:
-                # Bad measurement, don't update filter/position
+            if signal_noise_ratio < 0.6 or self.filter.loglikelihood(self.x_measured) < min_log_likelihood:
+                # Suspect / bad measurement, don't update filter/position
                 self.freeze()
                 return
             self.unfreeze()
@@ -94,54 +133,99 @@ class Window:
             self.freeze()
 
     def get_mask(self, param='x_filtered'):
+        """
+        Returns a masking image of shape (self.img_h, self.img_w) with the pixels occupied by this window set to 1.
+
+        :param param: Whether to use the 'x_filtered' or 'x_measured' position of the window.
+        :return: An image with the pixels occupied by the window set to 1 and all other pixels set to 0.
+        """
+        self.check_x_param(param)
         mask = np.zeros((self.img_h, self.img_w))
         mask[self.y_begin: self.y_end, self.x_begin(param): self.x_end(param)] = 1
         return mask
 
-    def pos_xy(self, param='x_filtered'):
-        assert param == 'x_filtered' or param == 'x_measured', 'Invalid position parameter'
+    def pos_xy(self, param: str = 'x_filtered') -> Tuple[float, float]:
+        """Returns the (x, y) position of this window."""
+        self.check_x_param(param)
         return getattr(self, param), self.y
 
+    def check_x_param(self, param):
+        assert param == 'x_filtered' or param == 'x_measured', "Invalid position parameter. `param` must be " \
+                                                               "'x_filtered' or 'x_measured' "
 
-def sliding_window_update(windows: List[Window], image, margin, mode):
+
+def sliding_window_update(windows: List[Window], score_img, margin, mode):
+    """
+    Updates each window in a list, constraining their search regions to  a marginal distance of the last valid window.
+
+    Each window's search region will be centered on the last undropped window position and extend a margin to the
+    left and right.
+
+    :param windows: A list of Window objects.
+    :param score_img: A score image, where pixel intensity represents where the lane most likely is.
+    :param margin: The maximum x distance the next window can be placed from the last undropped window.
+    :param mode: `left` or `right` for the lane the Windows are tracking.
+    """
     assert mode == 'left' or mode == 'right', "Mode not valid."
-    img_h, img_w = image.shape[0:2]
+    assert strictly_decreasing([w.y for w in windows]), "Windows not ordered properly. Should start at image bottom"
+    img_h, img_w = score_img.shape[0:2]
 
-    # Update the base window
+    # Update the bottom window
     if mode == 'left':
-        windows[0].update(image, (0, img_w // 2))
+        windows[0].update(score_img, (0, img_w // 2))
     elif mode == 'right':
-        windows[0].update(image, (img_w // 2, img_w))
+        windows[0].update(score_img, (img_w // 2, img_w))
 
     # Find the starting point for our search
     if windows[0].dropped:
         # Starting window does not exist, find an approximation.
-        search_region = image[2 * img_h // 3:, :]  # search bottom 1/3rd of image
+        search_region = score_img[2 * img_h // 3:, :]  # search bottom 1/3rd of score_img
         column_scores = gaussian_filter(np.sum(search_region, axis=0), sigma=windows[0].width / 3, truncate=3.0)
         if mode == 'left':
             search_center = argmax_between(column_scores, 0, img_w // 2)
         elif mode == 'right':
             search_center = argmax_between(column_scores, img_w // 2, img_w)
+        assert 'search_center' in locals(), 'No lane was found to start with.'  # TODO: Do something if no lane is found
     else:
-        # Already know the position of the base window
+        # Reuse the position of the bottom window
         search_center = windows[0].x_filtered
 
-    # Continue searching nearby the last detected window
+    # Update each window, searching nearby the last undropped window.
     for window in windows[1:]:
         x_search_range = (search_center - margin, search_center + margin)
-        window.update(image, x_search_range)
+        window.update(score_img, x_search_range)
 
         if not window.dropped:
             search_center = window.x_filtered
 
 
+def strictly_decreasing(L):
+    """Returns True if elements of L are strictly decreasing."""
+    return all(x > y for x, y in zip(L, L[1:]))
+
+
 def argmax_between(arr: np.ndarray, begin: int, end: int) -> int:
+    """
+    Returns the position of the maximal value between indexes `begin` and `end`.
+
+    In case of multiple occurrences of the maximum value, the index of the first occurrence is returned.
+    """
     max_ndx = np.argmax(arr[begin:end]) + begin
     return max_ndx
 
 
 def filter_window_list(windows: List[Window], include_frozen=True, include_dropped=False):
-    ret_windows = []
+    """
+    Given a list of Windows, returns a new list with frozen and dropped windows optionally removed.
+
+    :param windows: A list of Window objects.
+    :param include_frozen: Set False to not return any frozen windows.
+    :param include_dropped: Set False to not return any dropped windows.
+    :return: (windows_filtered, args)
+             windows_filtered: The new list of Windows after filters are applied.
+             args: The index in `windows` that each window in `windows_filtered` originated from.
+    """
+    windows_filtered = []
     args = []
     for i, window in enumerate(windows):
         if window.dropped and not include_dropped:
@@ -149,12 +233,22 @@ def filter_window_list(windows: List[Window], include_frozen=True, include_dropp
         elif window.frozen and not include_frozen:
             continue
         else:
-            ret_windows.append(window)
+            windows_filtered.append(window)
             args.append(i)
-    return ret_windows, args
+    return windows_filtered, args
 
 
 def window_image(windows: List[Window], param='x_filtered', color=(0, 255, 0), color_frozen=None, color_dropped=None):
+    """
+    Creates an image with the given `windows` colored in. By default dims frozen windows and hides dropped windows.
+
+    :param windows: A List of Windows to image.
+    :param param: Whether to use the 'x_filtered' or 'x_measured' position of the window.
+    :param color: Color for each window that is not frozen or dropped.
+    :param color_frozen: Color for each frozen window.
+    :param color_dropped: Color for each dropped window.
+    :return: An image with the windows colored in and all black elsewhere.
+    """
     if color_frozen is None:
         color_frozen = [ch * 0.6 for ch in color]
     if color_dropped is None:
@@ -180,6 +274,11 @@ class WindowFilter:
 
         State variable:   = [position,
                              velocity]
+
+        :param pos_init: Initial position.
+        :param meas_variance: Variance of each measurement. Decrease to have the filter chase each measurement faster.
+        :param process_variance: Variance of each prediction. Decrease to follow predictions more.
+        :param uncertainty_init: Uncertainty of initial position.
         """
         self.kf = KalmanFilter(dim_x=2, dim_z=1)
 
@@ -206,18 +305,20 @@ class WindowFilter:
         """
         Given an estimate x position, uses the kalman filter to estimate the most likely true position of the
         lane pixel.
+
         :param pos: measured x position of the pixel
-        :return: best estimate of the true x position of the pixel
         """
         self.kf.predict()
         self.kf.update(pos)
 
     def grow_uncertainty(self, mag):
         """Grows state uncertainty."""
-        # P = FPF' + Q
-        self.kf.P = self.kf._alpha_sq * dot3(self.kf.F, self.kf.P, self.kf.F.T) + self.kf.Q
+        for i in range(mag):
+            # P = FPF' + Q
+            self.kf.P = self.kf._alpha_sq * dot3(self.kf.F, self.kf.P, self.kf.F.T) + self.kf.Q
 
     def loglikelihood(self, pos):
+        """Calculates the likelihood of a measurement given the filter parameters and gaussian assumption."""
         self.kf.S = dot3(self.kf.H, self.kf.P, self.kf.H.T) + self.kf.R
         return logpdf(pos, np.dot(self.kf.H, self.kf.x), self.kf.S)
 
