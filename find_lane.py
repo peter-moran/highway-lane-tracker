@@ -249,7 +249,7 @@ class LaneFinder:
                     {'name': 'lightness', 'cspace': 'HLS', 'channel': 1, 'clipLimit': 2.0, 'threshold': 210}]
 
         # Perform binary thresholding according to each setting and combine them into one image.
-        scores = np.zeros(img.shape[0:2])
+        scores = np.zeros(img.shape[0:2]).astype('uint8')
         for params in settings:
             # Change color space
             color_t = getattr(cv2, 'COLOR_RGB2{}'.format(params['cspace']))
@@ -260,7 +260,7 @@ class LaneFinder:
             norm_img = clahe.apply(gray)
 
             # Threshold to binary
-            ret, binary = cv2.threshold(norm_img, params['threshold'], 255, cv2.THRESH_BINARY)
+            ret, binary = cv2.threshold(norm_img, params['threshold'], 1, cv2.THRESH_BINARY)
 
             scores += binary
 
@@ -268,7 +268,7 @@ class LaneFinder:
             self.save_visual(params['name'], gray)
             self.save_visual(params['name'] + '_binary', binary)
 
-        return scores.astype('uint8')
+        return scores
 
     def fit_lanes(self, points_left, points_right, fit_globally=False) -> dict:
         """
