@@ -1,35 +1,119 @@
-## Advanced Lane Finding
-[![Udacity - Self-Driving Car NanoDegree](https://s3.amazonaws.com/udacity-sdc/github/shield-carnd.svg)](http://www.udacity.com/drive)
+# Highway Lane Tracker  [![Udacity - Self-Driving Car NanoDegree](https://s3.amazonaws.com/udacity-sdc/github/shield-carnd.svg)](http://www.udacity.com/drive)
 
 
-In this project, your goal is to write a software pipeline to identify the lane boundaries in a video, but the main output or product we want you to create is a detailed writeup of the project.  Check out the [writeup template](https://github.com/udacity/CarND-Advanced-Lane-Lines/blob/master/writeup_template.md) for this project and use it as a starting point for creating your own writeup.  
 
-Creating a great writeup:
----
-A great writeup should include the rubric points as well as your description of how you addressed each point.  You should include a detailed description of the code used in each step (with line-number references and code snippets where necessary), and links to other supporting documents or external references.  You should include images in your writeup to demonstrate how your code works with examples.  
+![project_video_clip](./data/documentation_imgs/project_video_clip.gif)
 
-All that said, please be concise!  We're not looking for you to write a book here, just a brief description of how you passed each rubric point, and references to the relevant code :). 
 
-You're not required to use markdown for your writeup.  If you use another method please just submit a pdf of your writeup.
 
-The Project
----
+# The Project
 
-The goals / steps of this project are the following:
+The goals of this project was to:
 
-* Compute the camera calibration matrix and distortion coefficients given a set of chessboard images.
-* Apply a distortion correction to raw images.
-* Use color transforms, gradients, etc., to create a thresholded binary image.
-* Apply a perspective transform to rectify binary image ("birds-eye view").
-* Detect lane pixels and fit to find the lane boundary.
-* Determine the curvature of the lane and vehicle position with respect to center.
-* Warp the detected lane boundaries back onto the original image.
-* Output visual display of the lane boundaries and numerical estimation of lane curvature and vehicle position.
+* Calibrate cameras and apply distortion correction to raw images.
+* Apply a perspective transform to get an overhead perspective of the road.
+* Detect lane pixels.
+* Filter out the noise and determine a stable mathematical fit to the lane.
+* Determine the vehicle position in the lane and the lane curvature.
 
-The images for camera calibration are stored in the folder called `camera_cal`.  The images in `test_images` are for testing your pipeline on single frames.  If you want to extract more test images from the videos, you can simply use an image writing method like `cv2.imwrite()`, i.e., you can read the video in frame by frame as usual, and for frames you want to save for later you can write to an image file.  
+# Installation
 
-To help the reviewer examine your work, please save examples of the output from each stage of your pipeline in the folder called `ouput_images`, and include a description in your writeup for the project of what each image shows.    The video called `project_video.mp4` is the video your pipeline should work well on.  
+## Dependencies
 
-The `challenge_video.mp4` video is an extra (and optional) challenge for you if you want to test your pipeline under somewhat trickier conditions.  The `harder_challenge.mp4` video is another optional challenge and is brutal!
+* Python 3
+* OpenCV 2
+* Matplotlib
+* Numpy
+* Moviepy
+* [Symfit](http://symfit.readthedocs.io/en/latest/)
+* [Filterpy](https://filterpy.readthedocs.io/en/latest/)
 
-If you're feeling ambitious (again, totally optional though), don't stop there!  We encourage you to go out and take video of your own, calibrate your camera and show us how you would implement this project from scratch!
+An easy way to obtain these is with the [Udacity CarND-Term1-Starter-Kit](https://github.com/udacity/CarND-Term1-Starter-Kit) and Anaconda. To do so, run the following (or see the [full instructions](https://github.com/udacity/CarND-Term1-Starter-Kit/blob/master/doc/configure_via_anaconda.md)):
+
+```
+git clone https://github.com/udacity/CarND-Term1-Starter-Kit.git
+cd CarND-Term1-Starter-Kit
+conda env create -f environment.yml
+```
+
+And then install the rest by running:
+
+```
+pip install symfit
+pip install filterpy
+```
+
+## This Repository
+
+Download this repository by running:
+
+```
+git clone FILL IN *****************************************************
+cd FILL IN *****************************************************
+```
+
+# Usage
+
+## Standard usage
+
+To produce standard output, with the lane lines and detected windows all in one video (as shown in the clips above), simply run:
+
+```
+python find_lane.py ./path/to/video_file.mp4
+```
+
+This will produce a new file `video_file_presentation.mp4` in the `./output` folder.
+
+For example, to run the standard test video, run:
+
+```
+python find_lane.py ./data/test_videos/project_video.mp4
+```
+
+You can find the output at `./output/project_video_presentation.mp4`.
+
+More input video files can be found in `./data/test_videos`. However, new videos from a new camera would require calibration.
+
+## Advanced Usage
+
+### Pipeline visualizations
+
+To view any part of the image pipeline, such as the binary images alone or just the filtered windows, you can pass a 2nd parameter.
+
+```
+python find_lane.py ./path/to/video_file.mp4 <pipeline_element>
+```
+
+Files will be saved according to the pipeline element you selected, such as `./output/video_<pipeline_element>.mp4`.
+
+Valid pipeline elements include:
+
+**Lane detections:**
+
+- `presentation`, a combination of views as used for demonstration above (**default mode**).
+- `windows_raw`
+- `windows_filtered`
+- `highlighted_lane`
+
+**Image perspectives:**
+
+* `dash_undistorted`
+* `overhead`
+
+**Lane color space and binary thresholds:**
+
+*  `lab_b`, `lab_b_binary`
+*  `lightness`, `lightness_binary`
+*  `value`, `value_binary`
+
+
+* `pixel_scores`
+
+### Custom save location
+
+The third parameter allows you to specify a location to save the file. Make sure to specify the directory as well as the file name with extension.
+
+```
+python find_lane.py <video_file> <pipeline_element> <save_file>
+```
+

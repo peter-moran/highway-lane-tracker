@@ -178,7 +178,7 @@ class LaneFinder:
         # Account for visualization options
         if visuals is None:
             visuals = ['highlighted_lane']
-        self.__viz_desired = self.fix_viz_dependencies(visuals)
+        self.__viz_desired = self.viz_fix_dependencies(visuals)
 
         # Undistort and transform to overhead view
         img_dash_undistorted = self.camera.undistort(img_dashboard)
@@ -218,17 +218,17 @@ class LaneFinder:
         lane_position = lane_position_prcnt * REGULATION_LANE_WIDTH
 
         # Log visuals
-        self.save_visual('dash_undistorted', img_dash_undistorted)
-        self.save_visual('overhead', img_overhead)
-        self.save_visual('pixel_scores', pixel_scores)
-        self.save_visual('windows_raw', self.visuals['pixel_scores'],
+        self.viz_save('dash_undistorted', img_dash_undistorted)
+        self.viz_save('overhead', img_overhead)
+        self.viz_save('pixel_scores', pixel_scores)
+        self.viz_save('windows_raw', self.visuals['pixel_scores'],
                          img_proc_func=lambda img: self.viz_windows(img, 'raw'))
-        self.save_visual('windows_filtered', self.visuals['pixel_scores'],
-                         img_proc_func=lambda img: self.viz_windows(img, 'filtered'))
-        self.save_visual('highlighted_lane', img_dash_undistorted,
-                         img_proc_func=lambda img: viz_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
-        self.save_visual('presentation', self.visuals['highlighted_lane'],
-                         img_proc_func=lambda img: self.viz_presentation(img, lane_position, curve_radius))
+        self.viz_save('windows_filtered', self.visuals['pixel_scores'],
+                      img_proc_func=lambda img: self.viz_windows(img, 'filtered'))
+        self.viz_save('highlighted_lane', img_dash_undistorted,
+                      img_proc_func=lambda img: viz_lane(img, self.camera, x_fit_left, x_fit_right, y_fit))
+        self.viz_save('presentation', self.visuals['highlighted_lane'],
+                      img_proc_func=lambda img: self.viz_presentation(img, lane_position, curve_radius))
 
         return y_fit, x_fit_left, x_fit_right
 
@@ -264,8 +264,8 @@ class LaneFinder:
             scores += binary
 
             # Save images
-            self.save_visual(params['name'], gray)
-            self.save_visual(params['name'] + '_binary', binary)
+            self.viz_save(params['name'], gray)
+            self.viz_save(params['name'] + '_binary', binary)
 
         return cv2.normalize(scores, None, 0, 255, cv2.NORM_MINMAX)
 
@@ -344,7 +344,7 @@ class LaneFinder:
         return ((1 + (2 * fit_cr[0] * y_eval * camera.y_m_per_pix + fit_cr[1]) ** 2) ** 1.5) / np.absolute(
             2 * fit_cr[0])
 
-    def save_visual(self, name, image, img_proc_func=None):
+    def viz_save(self, name, image, img_proc_func=None):
         """
         Conditionally processes and saves the given image if this LaneFinder has been set to save it.
 
@@ -365,7 +365,7 @@ class LaneFinder:
             raise Exception('Image is not 3 channels or could not be converted to 3 channels. Cannot use.')
         self.visuals[name] = image
 
-    def fix_viz_dependencies(self, viz_names: list):
+    def viz_fix_dependencies(self, viz_names: list):
         """
         Ensures that any dependencies of the visuals in `viz_names` are also saved.
 

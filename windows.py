@@ -38,11 +38,11 @@ class Window:
         # Detection info
         self.filter = WindowFilter(pos_init=x_init)
         self.x_measured = None
-        self.dropped = True
         self.frozen = False
         self.detected = False
-        self.frozen_dur = 0
         self.max_frozen_dur = max_frozen_dur
+        self.frozen_dur = max_frozen_dur + 1
+        self.undrop_buffer = 1  # Number of calls to unfreeze() needed to go from dropped back to normal.
 
     def x_begin(self, param='x_filtered'):
         """
@@ -71,22 +71,22 @@ class Window:
     def freeze(self):
         """Marks the window as frozen, drops it if it's been frozen for too long, and increases filter uncertainty."""
         self.frozen = True
-        if self.frozen_dur > self.max_frozen_dur:
-            self.drop()
         self.frozen_dur += 1
         self.filter.grow_uncertainty(1)
 
     def unfreeze(self):
-        """Marks the window as not frozen and not dropped, resets frozen counter."""
-        self.frozen_dur = 0
-        self.dropped = False
+        """Marks the window as not frozen and not dropped, reduces frozen counter by 1."""
+        # Reduce frozen duration to max (plus some buffer)
+        self.frozen_dur = min(self.frozen_dur, self.max_frozen_dur + 1 + self.undrop_buffer)
+        self.frozen_dur -= 1
+        self.frozen_dur = max(0, self.frozen_dur)
+
+        # Change states
         self.frozen = False
 
-    def drop(self):
-        """Marks the window as dropped and increases filter uncertainty."""
-        self.dropped = True
-        # Quickly grow uncertainty
-        self.filter.grow_uncertainty(1)
+    @property
+    def dropped(self):
+        return self.frozen_dur > self.max_frozen_dur
 
     def update(self, score_img, x_search_range, min_log_likelihood=-40):
         """
