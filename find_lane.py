@@ -220,8 +220,7 @@ class LaneFinder:
         # Log visuals
         self.save_visual('dash_undistorted', img_dash_undistorted)
         self.save_visual('overhead', img_overhead)
-        self.save_visual('pixel_scores', pixel_scores,
-                         img_proc_func=lambda img: cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX))
+        self.save_visual('pixel_scores', pixel_scores)
         self.save_visual('windows_raw', self.visuals['pixel_scores'],
                          img_proc_func=lambda img: self.viz_windows(img, 'raw'))
         self.save_visual('windows_filtered', self.visuals['pixel_scores'],
@@ -268,7 +267,7 @@ class LaneFinder:
             self.save_visual(params['name'], gray)
             self.save_visual(params['name'] + '_binary', binary)
 
-        return scores
+        return cv2.normalize(scores, None, 0, 255, cv2.NORM_MINMAX)
 
     def fit_lanes(self, points_left, points_right, fit_globally=False) -> dict:
         """
