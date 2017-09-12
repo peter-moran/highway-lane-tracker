@@ -48,8 +48,8 @@ pip install filterpy
 Download this repository by running:
 
 ```
-git clone FILL IN *****************************************************
-cd FILL IN *****************************************************
+git clone https://github.com/peter-moran/highway-lane-tracker.git
+cd highway-lane-tracker
 ```
 
 # Usage
