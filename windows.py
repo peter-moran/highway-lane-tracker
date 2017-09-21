@@ -2,7 +2,7 @@ from typing import List, Tuple
 
 import numpy as np
 from filterpy.common import Q_discrete_white_noise
-from filterpy.kalman import KalmanFilter, logpdf, dot3
+from filterpy.kalman import KalmanFilter, dot3, logpdf
 from scipy.ndimage.filters import gaussian_filter
 
 
@@ -183,7 +183,7 @@ def sliding_window_update(windows: List[Window], score_img, margin, mode):
 
 def joint_sliding_window_update(windows_left: List[Window], windows_right: List[Window], score_img, margin):
     """
-    Updates window from both lists, preventing window crossover and constraining their search regions to a margin.
+    Updates Windows from both lists, preventing window crossover and constraining their search regions to a margin.
 
     This improves on `sliding_window_update()` by preventing windows from different lanes from crossing over each other
     or detecting the same part of the image.

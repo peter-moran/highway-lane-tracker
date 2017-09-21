@@ -1,10 +1,15 @@
 # Highway Lane Tracker  [![Udacity - Self-Driving Car NanoDegree](https://s3.amazonaws.com/udacity-sdc/github/shield-carnd.svg)](http://www.udacity.com/drive)
 
 
-
 ![project_video_clip](./data/documentation_imgs/project_video_clip.gif)
 
+![challenge_video_clip](./data/documentation_imgs/challenge_video_clip.gif)
 
+
+### Writeup & Full Videos
+Check out the full project [writeup and test videos at my blog](http://petermoran.org/robust-lane-tracking/)! I go
+into a full breakdown of the system's capabilities and the choices I
+made.
 
 # The Project
 

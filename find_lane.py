@@ -17,7 +17,7 @@ import symfit
 from imageio.core import NeedDownloadError
 
 from dynamic_subplot import DynamicSubplot
-from windows import Window, filter_window_list, window_image, joint_sliding_window_update
+from windows import Window, filter_window_list, joint_sliding_window_update, window_image
 
 # Import moviepy and install ffmpeg if needed.
 try:
@@ -222,7 +222,7 @@ class LaneFinder:
         self.viz_save('overhead', img_overhead)
         self.viz_save('pixel_scores', pixel_scores)
         self.viz_save('windows_raw', self.visuals['pixel_scores'],
-                         img_proc_func=lambda img: self.viz_windows(img, 'raw'))
+                      img_proc_func=lambda img: self.viz_windows(img, 'raw'))
         self.viz_save('windows_filtered', self.visuals['pixel_scores'],
                       img_proc_func=lambda img: self.viz_windows(img, 'filtered'))
         self.viz_save('highlighted_lane', img_dash_undistorted,
