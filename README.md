@@ -38,7 +38,7 @@ In simplest form, the major steps in the lane finding pipeline are:
 
        * If the last window position update was too long ago, drop the window entirely until a new, reliable measurement is made and we run an update.
 
-   * Search with the next window, but constrain it's search to a region centered on this window.
+   * Search with the next window, but constrain it's search to a region centered on *the filtered position* of this window.
 
    <p align="center"><img src="https://i2.wp.com/petermoran.org/wp-content/uploads/2017/09/raw_vs_filtered.gif?w=1100"><p>
 
