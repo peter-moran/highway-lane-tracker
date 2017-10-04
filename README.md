@@ -1,14 +1,10 @@
 # Highway Lane Tracker  [![Udacity - Self-Driving Car NanoDegree](https://s3.amazonaws.com/udacity-sdc/github/shield-carnd.svg)](http://www.udacity.com/drive)
 
-[![Peter Moran's Blog badge](https://img.shields.io/badge/Peter%20Moran's%20Blog-Robust%20Lane%20Tracking-blue.svg?style=social)](http://petermoran.org/robust-lane-tracking/)
-
-
+<p align="center"><a href="http://petermoran.org/robust-lane-tracking/"><img src="https://img.shields.io/badge/Peter%20Moran's%20Blog-Robust%20Lane%20Tracking-blue.svg?style=social"></a></p>
 
 ![project_video_clip](./data/documentation_imgs/project_video_clip.gif)
 
 ![challenge_video_clip](./data/documentation_imgs/challenge_video_clip.gif)
-
-
 
 # The Project
 
@@ -29,7 +25,8 @@ In simplest form, the major steps in the lane finding pipeline are:
 2. **Warp the perspective** of the dashboard image to an overhead view of the road.
 
 3. **Select for potential lane pixels** by locally normalizing the image, thresholding the color channels in various color spaces, and combining all the selected pixels into a single "score" image. Specifically, the LAB B, HSV value, and HLS lightness color channels were used.
-   ![Single channel thresholding example](https://i1.wp.com/petermoran.org/wp-content/uploads/2017/09/hsv_v_thresh.png?w=600)
+
+   <p align="center"><img src="https://i1.wp.com/petermoran.org/wp-content/uploads/2017/09/hsv_v_thresh.png?w=600"></p>
 
 4. **Perform a sliding window search** over the selected lane pixels to find the center of each lane line at different points along the y-axis. Each window has it's own independent Kalman filter that uses a decaying velocity model (i.e. we expect the velocity of the windows to decrease over time).
 
@@ -39,11 +36,11 @@ In simplest form, the major steps in the lane finding pipeline are:
 
    * Using the Kalman filter and the signal-to-noise ratio, determine if the measurement is unreliable or outlier. If it is, do not update the filtered window position.
 
-     * If the last window position update was too long ago, drop the window entirely until a new, reliable measurement is made and we run an update.
+       * If the last window position update was too long ago, drop the window entirely until a new, reliable measurement is made and we run an update.
 
    * Search with the next window, but constrain it's search to a region centered on this window.
 
-     ![Window selection example](https://i2.wp.com/petermoran.org/wp-content/uploads/2017/09/raw_vs_filtered.gif?w=1100)
+   <p align="center"><img src="https://i2.wp.com/petermoran.org/wp-content/uploads/2017/09/raw_vs_filtered.gif?w=1100"><p>
 
 5. **Apply a polynomial fit** along the filtered windows that have *not* been dropped for each lane line.
 
