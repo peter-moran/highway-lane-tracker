@@ -1,6 +1,8 @@
 # Highway Lane Tracker  [![Udacity - Self-Driving Car NanoDegree](https://s3.amazonaws.com/udacity-sdc/github/shield-carnd.svg)](http://www.udacity.com/drive)
 
-<p align="center"><a href="http://petermoran.org/robust-lane-tracking/"><img src="https://img.shields.io/badge/Peter%20Moran's%20Blog-Robust%20Lane%20Tracking-blue.svg?style=social"></a></p>
+<p align="left"><a href="http://petermoran.org/robust-lane-tracking/"><img src="https://img.shields.io/badge/Peter_Moran's_Blog-Find_the_whole_writeup_at_my_website-blue.svg?style=social"></a></p>
+
+<p>&nbsp</p>
 
 ![project_video_clip](./data/documentation_imgs/project_video_clip.gif)
 
